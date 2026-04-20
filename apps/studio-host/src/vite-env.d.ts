@@ -43,12 +43,25 @@ interface HopAndroidBridge {
   } | null;
   pickWritableUri?(suggestedFileName: string, mimeType: string): Promise<string | null> | string | null;
   writeUriBytes?(uri: string, bytes: number[]): Promise<void> | void;
+  persistUriPermission?(uri: string): Promise<boolean> | boolean;
+}
+
+interface HopAndroidNativeBridge {
+  readUriBytesBase64?(uri: string): string | null;
+  readUriDocument?(uri: string): string;
+  getUriMetadata?(uri: string): string;
+  materializeUriToCachePath?(uri: string): string | null;
+  pickWritableUri?(suggestedFileName: string, mimeType: string): string | null;
+  writeUriBytesBase64?(uri: string, bytesBase64: string): void;
+  persistUriPermission?(uri: string): boolean;
 }
 
 declare global {
   var __HOP_ANDROID__: HopAndroidBridge | undefined;
+  var __HOP_ANDROID_NATIVE__: HopAndroidNativeBridge | undefined;
   interface Window {
     __HOP_ANDROID__?: HopAndroidBridge;
+    __HOP_ANDROID_NATIVE__?: HopAndroidNativeBridge;
   }
 }
 

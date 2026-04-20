@@ -1,4 +1,5 @@
 import { createBridge, isTauriMobileRuntime, isTauriRuntime } from '@/core/bridge-factory';
+import { installAndroidNativeHostBridge } from '@/core/android-native-bootstrap';
 import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { createDesktopDocument, setupDesktopEvents } from '@/core/desktop-events';
@@ -28,6 +29,8 @@ import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
 import { enhanceCustomSelects } from '@/ui/custom-select';
 import { setupMobileShell } from '@/ui/mobile-shell';
+
+installAndroidNativeHostBridge();
 
 const wasm = createBridge();
 const eventBus = new EventBus();

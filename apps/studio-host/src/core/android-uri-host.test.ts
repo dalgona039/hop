@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isUriWritePermissionError,
   LARGE_CONTENT_URI_THRESHOLD_BYTES,
+  persistUriPermission,
   readUriBytes,
   requestWritableUri,
   resolveContentUriOpenTarget,
@@ -24,6 +25,18 @@ describe('android uri host', () => {
 
     expect(bytes).toEqual(Uint8Array.from([1, 2, 3]));
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('persists URI permission before host reads when supported', async () => {
+    const persistUriPermissionMock = vi.fn().mockResolvedValue(true);
+    vi.stubGlobal('__HOP_ANDROID__', {
+      persistUriPermission: persistUriPermissionMock,
+      readUriBytes: vi.fn().mockResolvedValue([1]),
+    });
+
+    await readUriBytes('content://example/doc.hwp');
+
+    expect(persistUriPermissionMock).toHaveBeenCalledWith('content://example/doc.hwp');
   });
 
   it('falls back to fetch for URI reads when host bridge is missing', async () => {
@@ -155,11 +168,18 @@ describe('android uri host', () => {
 
   it('requests writable URI through Android host picker when available', async () => {
     vi.stubGlobal('__HOP_ANDROID__', {
+      persistUriPermission: vi.fn().mockResolvedValue(true),
       pickWritableUri: vi.fn().mockResolvedValue('content://example/new-doc.hwp'),
     });
 
     const target = await requestWritableUri('new-doc.hwp', 'application/x-hwp');
 
     expect(target).toBe('content://example/new-doc.hwp');
+  });
+
+  it('returns false when persistUriPermission hook is unavailable', async () => {
+    const persisted = await persistUriPermission('content://example/doc.hwp');
+
+    expect(persisted).toBe(false);
   });
 });

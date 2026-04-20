@@ -50,6 +50,7 @@ type AndroidUriHost = {
     | ((uri: string) => Promise<MaterializedUriPath | string | null> | MaterializedUriPath | string | null);
   pickWritableUri?: (suggestedFileName: string, mimeType: string) => Promise<string | null> | string | null;
   writeUriBytes?: (uri: string, bytes: number[]) => Promise<void> | void;
+  persistUriPermission?: (uri: string) => Promise<boolean> | boolean;
 };
 
 export const LARGE_CONTENT_URI_THRESHOLD_BYTES = 24 * 1024 * 1024;
@@ -204,6 +205,20 @@ async function resolveUriMetadata(uri: string): Promise<AndroidUriMetadata> {
   return normalizeMetadata(metadata);
 }
 
+export async function persistUriPermission(uri: string): Promise<boolean> {
+  const host = resolveAndroidUriHost();
+  if (!host || typeof host.persistUriPermission !== 'function') {
+    return false;
+  }
+
+  try {
+    return Boolean(await host.persistUriPermission(uri));
+  } catch (error) {
+    console.warn('[android-uri-host] persistUriPermission 실패:', error);
+    return false;
+  }
+}
+
 async function readUriDocument(uri: string): Promise<{ bytes: Uint8Array; metadata: AndroidUriMetadata }> {
   const host = resolveAndroidUriHost();
   if (host && typeof host.readUriDocument === 'function') {
@@ -233,6 +248,8 @@ async function materializeUriToPath(
 }
 
 export async function readUriBytes(uri: string): Promise<Uint8Array> {
+  await persistUriPermission(uri);
+
   const host = resolveAndroidUriHost();
   if (host && typeof host.readUriBytes === 'function') {
     const result = await host.readUriBytes(uri);
@@ -247,6 +264,8 @@ export async function readUriBytes(uri: string): Promise<Uint8Array> {
 }
 
 export async function resolveContentUriOpenTarget(uri: string): Promise<ContentUriOpenTarget> {
+  await persistUriPermission(uri);
+
   let metadata = await resolveUriMetadata(uri);
   if ((metadata.size ?? 0) > LARGE_CONTENT_URI_THRESHOLD_BYTES) {
     const materialized = await materializeUriToPath(uri);
@@ -295,10 +314,15 @@ export async function requestWritableUri(
   if (!uri) return null;
 
   const trimmed = uri.trim();
+  if (trimmed.length > 0) {
+    await persistUriPermission(trimmed);
+  }
   return trimmed.length > 0 ? trimmed : null;
 }
 
 export async function writeUriBytes(uri: string, bytes: Uint8Array): Promise<void> {
+  await persistUriPermission(uri);
+
   const host = resolveAndroidUriHost();
   if (host && typeof host.writeUriBytes === 'function') {
     try {
