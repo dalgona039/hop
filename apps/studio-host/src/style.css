@@ -22,3 +22,4 @@
 @import '@/styles/command-palette.css';
 @import '@/styles/custom-select.css';
 @import '@/styles/responsive.css';
+@import './styles/mobile-shell.css';

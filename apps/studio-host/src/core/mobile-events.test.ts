@@ -99,6 +99,79 @@ describe('mobile events', () => {
     });
   });
 
+  it('uses Android metadata displayName for content URI file labels', async () => {
+    mobileRuntimeFlags.mobile = true;
+    installWindowMocks();
+    const eventBus = { emit: vi.fn() };
+    const bridge = {
+      takePendingOpenPaths: vi.fn().mockResolvedValue(['content://media/external/file/1023']),
+      openDocumentWithExternalBytes: vi.fn().mockResolvedValue({
+        docInfo: { pageCount: 2 },
+        message: '보고서.hwp — 2페이지',
+      }),
+    };
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('__HOP_ANDROID__', {
+      getUriMetadata: vi.fn().mockResolvedValue({
+        displayName: '보고서.hwp',
+      }),
+    });
+
+    await setupMobileEvents({
+      bridge,
+      eventBus: eventBus as never,
+      setMessage: vi.fn(),
+    });
+
+    expect(bridge.openDocumentWithExternalBytes).toHaveBeenCalledWith(
+      '보고서.hwp',
+      expect.any(Uint8Array),
+      'hwp',
+      'content://media/external/file/1023',
+    );
+  });
+
+  it('opens large content URI targets via materialized cache path and preserves external source', async () => {
+    mobileRuntimeFlags.mobile = true;
+    installWindowMocks();
+    const eventBus = { emit: vi.fn() };
+    const bridge = {
+      takePendingOpenPaths: vi.fn().mockResolvedValue(['content://provider/docs/9999']),
+      openDocumentByPath: vi.fn().mockResolvedValue({
+        docInfo: { pageCount: 10 },
+        message: 'loaded from cache path',
+      }),
+      bindExternalSourceUri: vi.fn(),
+    };
+
+    vi.stubGlobal('__HOP_ANDROID__', {
+      getUriMetadata: vi.fn().mockResolvedValue({
+        displayName: 'large.hwp',
+        size: 30 * 1024 * 1024,
+      }),
+      materializeUriToCachePath: vi.fn().mockResolvedValue('/tmp/hop-cache/large.hwp'),
+    });
+
+    await setupMobileEvents({
+      bridge,
+      eventBus: eventBus as never,
+      setMessage: vi.fn(),
+    });
+
+    expect(bridge.openDocumentByPath).toHaveBeenCalledWith('/tmp/hop-cache/large.hwp');
+    expect(bridge.bindExternalSourceUri).toHaveBeenCalledWith('content://provider/docs/9999', 'large.hwp');
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-document-loaded', {
+      docInfo: { pageCount: 10 },
+      message: 'loaded from cache path',
+    });
+  });
+
   it('reports unsupported targets', async () => {
     mobileRuntimeFlags.mobile = true;
     installWindowMocks();

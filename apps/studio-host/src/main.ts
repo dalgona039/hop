@@ -1,7 +1,8 @@
-import { createBridge, isTauriRuntime } from '@/core/bridge-factory';
+import { createBridge, isTauriMobileRuntime, isTauriRuntime } from '@/core/bridge-factory';
 import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { createDesktopDocument, setupDesktopEvents } from '@/core/desktop-events';
+import { setupMobileDraftAutosave } from '@/core/mobile-autosave';
 import { setupMobileEvents } from '@/core/mobile-events';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
@@ -26,6 +27,7 @@ import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
 import { enhanceCustomSelects } from '@/ui/custom-select';
+import { setupMobileShell } from '@/ui/mobile-shell';
 
 const wasm = createBridge();
 const eventBus = new EventBus();
@@ -33,6 +35,12 @@ const eventBus = new EventBus();
 type DirtyAwareBridge = {
   markDocumentDirty?(): void;
   hasUnsavedChanges?(): boolean;
+};
+
+type SnapshotBridge = {
+  pageCount: number;
+  fileName?: string;
+  exportHwp(): Uint8Array;
 };
 
 // E2E 테스트용 전역 노출 (개발 모드 전용)
@@ -201,6 +209,42 @@ async function initialize(): Promise<void> {
         sbMessage().textContent = message;
       },
     });
+    setupMobileShell({
+      dispatcher,
+      setStatus: (message) => {
+        sbMessage().textContent = message;
+      },
+    });
+    setupMobileDraftAutosave({
+      enabled: isTauriMobileRuntime(),
+      eventBus,
+      setMessage: (message) => {
+        sbMessage().textContent = message;
+      },
+      getCurrentSnapshot: () => {
+        const snapshotBridge = wasm as unknown as SnapshotBridge;
+        if (snapshotBridge.pageCount === 0) return null;
+
+        const dirtyBridge = wasm as DirtyAwareBridge;
+        const hasUnsavedChanges = dirtyBridge.hasUnsavedChanges?.() ?? true;
+        if (!hasUnsavedChanges) return null;
+
+        try {
+          return {
+            fileName: normalizeAutosaveFileName(snapshotBridge.fileName),
+            bytes: snapshotBridge.exportHwp(),
+            savedAt: Date.now(),
+          };
+        } catch (error) {
+          console.warn('[main] 모바일 임시 저장 스냅샷 생성 실패:', error);
+          return null;
+        }
+      },
+      restoreSnapshot: async (snapshot) => {
+        const docInfo = wasm.loadDocument(snapshot.bytes, snapshot.fileName);
+        await initializeDocument(docInfo, `${snapshot.fileName} — 임시 저장본 복구`);
+      },
+    });
 
     // E2E 테스트용 전역 노출 (개발 모드 전용)
     if (import.meta.env.DEV) {
@@ -357,6 +401,13 @@ function setupZoomControls(): void {
       vm.setZoom(1.0);
     }
   });
+}
+
+function normalizeAutosaveFileName(fileName: string | undefined): string {
+  const normalized = fileName?.trim() ?? '';
+  if (!normalized) return 'document.hwp';
+  if (/\.(hwp|hwpx)$/i.test(normalized)) return normalized;
+  return `${normalized}.hwp`;
 }
 
 let totalSections = 1;

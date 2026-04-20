@@ -1,10 +1,13 @@
 import type { EventBus } from '@/core/event-bus';
 import { isTauriMobileRuntime } from '@/core/bridge-factory';
-import { readUriBytes } from './android-uri-host';
+import { resolveContentUriOpenTarget } from './android-uri-host';
 import type { DesktopBridgeApi, DesktopLoadPayload } from './tauri-bridge';
 
 type MobileRuntimeBridge = Partial<
-  Pick<DesktopBridgeApi, 'openDocumentByPath' | 'openDocumentWithExternalBytes' | 'takePendingOpenPaths'>
+  Pick<
+    DesktopBridgeApi,
+    'openDocumentByPath' | 'openDocumentWithExternalBytes' | 'takePendingOpenPaths' | 'bindExternalSourceUri'
+  >
 >;
 
 interface MobileEventsOptions {
@@ -48,19 +51,6 @@ function isSupportedDocumentTarget(value: string): boolean {
   return /\.(hwp|hwpx)(?:$|[?#])/i.test(value);
 }
 
-function inferDocumentFormat(fileName: string): 'hwp' | 'hwpx' | undefined {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith('.hwpx')) return 'hwpx';
-  if (lower.endsWith('.hwp')) return 'hwp';
-  return undefined;
-}
-
-function inferFileNameFromTarget(target: string): string {
-  const withoutQuery = target.split('?')[0].split('#')[0];
-  const last = withoutQuery.split('/').pop();
-  return last && last.length > 0 ? decodeURIComponent(last) : 'document.hwp';
-}
-
 function normalizePathTarget(target: string): string {
   if (!target.toLowerCase().startsWith('file://')) return target;
 
@@ -69,10 +59,6 @@ function normalizePathTarget(target: string): string {
   } catch {
     return target;
   }
-}
-
-async function readContentUriBytes(target: string): Promise<Uint8Array> {
-  return readUriBytes(target);
 }
 
 async function openLatestMobileDocument({
@@ -97,18 +83,27 @@ async function openLatestMobileDocument({
 
     let loaded: DesktopLoadPayload | null = null;
     if (target.toLowerCase().startsWith('content://')) {
-      if (!bridge.openDocumentWithExternalBytes) {
-        setMessage('모바일 content URI 열기 브리지가 준비되지 않았습니다');
-        return;
+      const openTarget = await resolveContentUriOpenTarget(target);
+
+      if (openTarget.kind === 'path') {
+        if (!bridge.openDocumentByPath) {
+          setMessage('모바일 파일 열기 브리지가 준비되지 않았습니다');
+          return;
+        }
+        loaded = await bridge.openDocumentByPath(normalizePathTarget(openTarget.path));
+        bridge.bindExternalSourceUri?.(target, openTarget.fileName);
+      } else {
+        if (!bridge.openDocumentWithExternalBytes) {
+          setMessage('모바일 content URI 열기 브리지가 준비되지 않았습니다');
+          return;
+        }
+        loaded = await bridge.openDocumentWithExternalBytes(
+          openTarget.fileName,
+          openTarget.bytes,
+          openTarget.format,
+          target,
+        );
       }
-      const fileName = inferFileNameFromTarget(target);
-      const bytes = await readContentUriBytes(target);
-      loaded = await bridge.openDocumentWithExternalBytes(
-        fileName,
-        bytes,
-        inferDocumentFormat(fileName),
-        target,
-      );
     } else {
       if (!bridge.openDocumentByPath) {
         setMessage('모바일 파일 열기 브리지가 준비되지 않았습니다');

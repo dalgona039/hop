@@ -1,0 +1,150 @@
+import { isTauriMobileRuntime } from '@/core/bridge-factory';
+import type { CommandDispatcher } from '@/command/dispatcher';
+
+interface MobileShellOptions {
+  dispatcher: CommandDispatcher;
+  setStatus(message: string): void;
+}
+
+interface MobileAction {
+  id: string;
+  label: string;
+  icon: string;
+}
+
+const MOBILE_BAR_ID = 'hop-mobile-bottom-bar';
+const MOBILE_SHEET_ID = 'hop-mobile-context-sheet';
+const LONG_PRESS_MS = 520;
+
+const MOBILE_ACTIONS: MobileAction[] = [
+  { id: 'file:open', label: '열기', icon: '📂' },
+  { id: 'file:save', label: '저장', icon: '💾' },
+  { id: 'edit:undo', label: '되돌리기', icon: '↶' },
+  { id: 'edit:redo', label: '다시실행', icon: '↷' },
+  { id: 'file:save-as', label: '다른 이름', icon: '🗂' },
+];
+
+function markDesktopChromeHidden(id: string): void {
+  const element = document.getElementById(id);
+  if (element) {
+    element.setAttribute('data-mobile-hidden', 'true');
+  }
+}
+
+function createActionButton(action: MobileAction, dispatcher: CommandDispatcher): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = 'hop-mobile-action';
+  button.type = 'button';
+  button.dataset.command = action.id;
+  button.innerHTML = `<span class="hop-mobile-action-icon">${action.icon}</span><span class="hop-mobile-action-label">${action.label}</span>`;
+  button.addEventListener('click', () => {
+    dispatcher.dispatch(action.id);
+  });
+  return button;
+}
+
+function ensureBottomBar(dispatcher: CommandDispatcher): void {
+  if (document.getElementById(MOBILE_BAR_ID)) return;
+
+  const nav = document.createElement('nav');
+  nav.id = MOBILE_BAR_ID;
+  nav.setAttribute('aria-label', '모바일 빠른 작업');
+  for (const action of MOBILE_ACTIONS.slice(0, 4)) {
+    nav.appendChild(createActionButton(action, dispatcher));
+  }
+  document.body.appendChild(nav);
+}
+
+function installLongPressSheet(dispatcher: CommandDispatcher, setStatus: (message: string) => void): void {
+  const container = document.getElementById('scroll-container');
+  if (!container || document.getElementById(MOBILE_SHEET_ID)) return;
+
+  const sheet = document.createElement('div');
+  sheet.id = MOBILE_SHEET_ID;
+  sheet.hidden = true;
+  sheet.setAttribute('role', 'menu');
+
+  for (const action of MOBILE_ACTIONS) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'hop-mobile-sheet-item';
+    item.dataset.command = action.id;
+    item.textContent = `${action.icon} ${action.label}`;
+    item.addEventListener('click', () => {
+      sheet.hidden = true;
+      dispatcher.dispatch(action.id);
+      setStatus(`${action.label} 실행`);
+    });
+    sheet.appendChild(item);
+  }
+
+  document.body.appendChild(sheet);
+
+  const hideSheet = () => {
+    sheet.hidden = true;
+  };
+
+  let timer: number | null = null;
+  let touchX = 0;
+  let touchY = 0;
+
+  const openSheet = (x: number, y: number) => {
+    const sheetWidth = 190;
+    const sheetHeight = Math.min(56 * MOBILE_ACTIONS.length, 320);
+    const left = Math.max(8, Math.min(x - sheetWidth / 2, window.innerWidth - sheetWidth - 8));
+    const top = Math.max(8, Math.min(y - sheetHeight - 12, window.innerHeight - sheetHeight - 80));
+
+    sheet.style.left = `${left}px`;
+    sheet.style.top = `${top}px`;
+    sheet.hidden = false;
+  };
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  container.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    touchX = touch.clientX;
+    touchY = touch.clientY;
+    clearTimer();
+    timer = window.setTimeout(() => {
+      timer = null;
+      openSheet(touchX, touchY);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  container.addEventListener('touchmove', (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    if (Math.abs(touch.clientX - touchX) > 12 || Math.abs(touch.clientY - touchY) > 12) {
+      clearTimer();
+    }
+  }, { passive: true });
+
+  container.addEventListener('touchend', clearTimer, { passive: true });
+  container.addEventListener('touchcancel', clearTimer, { passive: true });
+
+  document.addEventListener('touchstart', (event) => {
+    if (!sheet.hidden && !sheet.contains(event.target as Node)) {
+      hideSheet();
+    }
+  }, { passive: true });
+}
+
+export function setupMobileShell({ dispatcher, setStatus }: MobileShellOptions): void {
+  if (!isTauriMobileRuntime()) return;
+  if (document.body.classList.contains('hop-mobile-runtime')) return;
+
+  document.body.classList.add('hop-mobile-runtime');
+  markDesktopChromeHidden('menu-bar');
+  markDesktopChromeHidden('icon-toolbar');
+  markDesktopChromeHidden('style-bar');
+
+  ensureBottomBar(dispatcher);
+  installLongPressSheet(dispatcher, setStatus);
+}

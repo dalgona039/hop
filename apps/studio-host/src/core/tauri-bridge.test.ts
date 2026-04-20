@@ -4,7 +4,10 @@ const invokeMock = vi.hoisted(() => vi.fn());
 const saveMock = vi.hoisted(() => vi.fn());
 const openMock = vi.hoisted(() => vi.fn());
 const messageMock = vi.hoisted(() => vi.fn());
-let TauriBridgeCtor: new () => Record<string, unknown>;
+const writeUriBytesMock = vi.hoisted(() => vi.fn());
+const requestWritableUriMock = vi.hoisted(() => vi.fn());
+const isUriWritePermissionErrorMock = vi.hoisted(() => vi.fn());
+let TauriBridgeCtor: new () => any;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
@@ -14,6 +17,12 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: openMock,
   save: saveMock,
   message: messageMock,
+}));
+
+vi.mock('./android-uri-host', () => ({
+  writeUriBytes: writeUriBytesMock,
+  requestWritableUri: requestWritableUriMock,
+  isUriWritePermissionError: isUriWritePermissionErrorMock,
 }));
 
 vi.mock('@/core/wasm-bridge', () => ({
@@ -44,6 +53,9 @@ describe('TauriBridge', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    isUriWritePermissionErrorMock.mockReturnValue(false);
+    requestWritableUriMock.mockResolvedValue(null);
+    writeUriBytesMock.mockResolvedValue(undefined);
     (globalThis as { document?: { title: string } }).document = { title: '' };
     ({ TauriBridge: TauriBridgeCtor } = await import('./tauri-bridge'));
   });
@@ -268,7 +280,168 @@ describe('TauriBridge', () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(messageMock).toHaveBeenCalled();
   });
+
+  it('saves external URI documents by writing URI bytes and committing native revision', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'source.hwp',
+      sourcePath: null,
+      format: 'hwp',
+      pageCount: 1,
+      revision: 4,
+      dirty: true,
+      warnings: [],
+    });
+    bindExternalSourceUri(bridge, 'content://provider/docs/source.hwp', 'source.hwp');
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'export_hwp_bytes_for_external_save') {
+        return {
+          docId: 'doc-1',
+          revision: 4,
+          fileName: 'source.hwp',
+          bytes: [5, 6, 7],
+        };
+      }
+      if (command === 'commit_external_hwp_save') {
+        return {
+          docId: 'doc-1',
+          sourcePath: null,
+          format: 'hwp',
+          revision: 5,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentFromCommand();
+
+    expect(writeUriBytesMock).toHaveBeenCalledWith(
+      'content://provider/docs/source.hwp',
+      Uint8Array.from([5, 6, 7]),
+    );
+    expect(result).toEqual({
+      docId: 'doc-1',
+      sourcePath: null,
+      format: 'hwp',
+      revision: 5,
+      dirty: false,
+      warnings: [],
+    });
+  });
+
+  it('falls back to writable URI picker when external source URI is read-only', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'source.hwp',
+      sourcePath: null,
+      format: 'hwp',
+      pageCount: 1,
+      revision: 9,
+      dirty: true,
+      warnings: [],
+    });
+    bindExternalSourceUri(bridge, 'content://provider/docs/source.hwp', 'source.hwp');
+
+    writeUriBytesMock
+      .mockRejectedValueOnce(new Error('SecurityException: permission denied'))
+      .mockResolvedValueOnce(undefined);
+    isUriWritePermissionErrorMock.mockReturnValue(true);
+    requestWritableUriMock.mockResolvedValue('content://provider/new-doc.hwp');
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'export_hwp_bytes_for_external_save') {
+        return {
+          docId: 'doc-1',
+          revision: 9,
+          fileName: 'source.hwp',
+          bytes: [1, 2, 3],
+        };
+      }
+      if (command === 'commit_external_hwp_save') {
+        return {
+          docId: 'doc-1',
+          sourcePath: null,
+          format: 'hwp',
+          revision: 10,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentFromCommand();
+
+    expect(requestWritableUriMock).toHaveBeenCalledWith('source.hwp', 'application/x-hwp');
+    expect(writeUriBytesMock).toHaveBeenNthCalledWith(
+      2,
+      'content://provider/new-doc.hwp',
+      Uint8Array.from([1, 2, 3]),
+    );
+    expect(result?.revision).toBe(10);
+  });
+
+  it('uses save-as fallback when writable URI picker is canceled', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'source.hwp',
+      sourcePath: null,
+      format: 'hwp',
+      pageCount: 1,
+      revision: 2,
+      dirty: true,
+      warnings: [],
+    });
+    bindExternalSourceUri(bridge, 'content://provider/docs/source.hwp', 'source.hwp');
+
+    writeUriBytesMock.mockRejectedValueOnce(new Error('SecurityException: permission denied'));
+    isUriWritePermissionErrorMock.mockReturnValue(true);
+    requestWritableUriMock.mockResolvedValue(null);
+    saveMock.mockResolvedValue('/tmp/fallback');
+
+    invokeMock.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'export_hwp_bytes_for_external_save') {
+        return {
+          docId: 'doc-1',
+          revision: 2,
+          fileName: 'source.hwp',
+          bytes: [4, 5],
+        };
+      }
+      if (command === 'check_external_modification') {
+        expect(args).toEqual({ docId: 'doc-1', targetPath: '/tmp/fallback.hwp' });
+        return { changed: false };
+      }
+      if (command === 'save_hwp_bytes') {
+        return {
+          docId: 'doc-1',
+          sourcePath: '/tmp/fallback.hwp',
+          format: 'hwp',
+          revision: 3,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentFromCommand();
+
+    expect(saveMock).toHaveBeenCalled();
+    expect(result?.sourcePath).toBe('/tmp/fallback.hwp');
+  });
 });
+
+function bindExternalSourceUri(bridge: Record<string, unknown>, sourceUri: string, fileName?: string) {
+  (bridge as unknown as { bindExternalSourceUri(sourceUri: string, fileName?: string): void })
+    .bindExternalSourceUri(sourceUri, fileName);
+}
 
 function applyOpenResult(bridge: Record<string, unknown>, result: Record<string, unknown>) {
   (bridge as unknown as { applyNativeOpenResult(result: Record<string, unknown>): void })

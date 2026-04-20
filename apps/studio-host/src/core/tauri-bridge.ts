@@ -1,6 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentInfo } from '@/core/types';
-import { writeUriBytes } from './android-uri-host';
+import { isUriWritePermissionError, requestWritableUri, writeUriBytes } from './android-uri-host';
 
 type DocumentFormat = 'hwp' | 'hwpx';
 
@@ -63,6 +63,7 @@ export interface DesktopBridgeApi {
   saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null>;
   exportHwpBytesForExternalSave(): Promise<ExternalSavePayload>;
   commitExternalHwpSave(bytes: Uint8Array, fileName?: string): Promise<DesktopSaveResult>;
+  bindExternalSourceUri?(sourceUri: string, fileName?: string): void;
   exportPdfFromCommand(): Promise<string | null>;
   printCurrentWebview(): Promise<void>;
   destroyCurrentWindow(): Promise<void>;
@@ -211,6 +212,14 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     return result;
   }
 
+  bindExternalSourceUri(sourceUri: string, fileName?: string): void {
+    this.externalSourceUri = sourceUri;
+    if (fileName && fileName.trim().length > 0) {
+      this.fileName = fileName;
+    }
+    this.updateDocumentTitle();
+  }
+
   async exportPdfFromCommand(): Promise<string | null> {
     this.ensureDocumentLoaded();
     const targetPath = await this.selectSavePath(this.suggestedPdfName(), 'PDF 문서', ['pdf']);
@@ -323,12 +332,38 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   ): Promise<DesktopSaveResult | null> {
     const payload = await this.exportHwpBytesForExternalSave();
     const bytes = new Uint8Array(payload.bytes);
-    await this.writeExternalUriBytes(sourceUri, bytes);
-    return this.commitExternalHwpSave(bytes, payload.fileName);
+    try {
+      await this.writeExternalUriBytes(sourceUri, bytes);
+      return this.commitExternalHwpSave(bytes, payload.fileName);
+    } catch (error) {
+      if (!isUriWritePermissionError(error)) {
+        throw error;
+      }
+      return this.saveExternalUriWithPickerFallback(bytes, payload.fileName);
+    }
   }
 
   private async writeExternalUriBytes(sourceUri: string, bytes: Uint8Array): Promise<void> {
     await writeUriBytes(sourceUri, bytes);
+  }
+
+  private async saveExternalUriWithPickerFallback(
+    bytes: Uint8Array,
+    suggestedFileName: string,
+  ): Promise<DesktopSaveResult | null> {
+    const nextName = this.withExtension(suggestedFileName || this.fileName || 'document', 'hwp');
+    const writableUri = await requestWritableUri(nextName, 'application/x-hwp');
+
+    if (!writableUri) {
+      return this.saveDocumentAsFromCommand();
+    }
+
+    await this.writeExternalUriBytes(writableUri, bytes);
+    const result = await this.commitExternalHwpSave(bytes, nextName);
+    this.externalSourceUri = writableUri;
+    this.fileName = nextName;
+    this.updateDocumentTitle();
+    return result;
   }
 
   private async confirmExternalOverwriteIfNeeded(
