@@ -9,6 +9,7 @@
   "scripts": {
     "build:studio": "pnpm --filter @golbin/hop-studio-host build",
     "build:desktop": "pnpm --filter hop-desktop build",
+    "android:bridge:setup": "node scripts/setup-android-bridge.mjs",
     "tauri": "pnpm --filter hop-desktop tauri",
     "test": "pnpm run test:upstream && pnpm run test:studio && pnpm run test:desktop",
     "test:upstream": "node --test tests/update-upstream.test.mjs",
