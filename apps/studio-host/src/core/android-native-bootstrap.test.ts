@@ -3,6 +3,8 @@ import { installAndroidNativeHostBridge } from './android-native-bootstrap';
 
 describe('android native bootstrap', () => {
   afterEach(() => {
+    delete (globalThis as { __HOP_ANDROID__?: unknown }).__HOP_ANDROID__;
+    delete (globalThis as { __HOP_ANDROID_NATIVE__?: unknown }).__HOP_ANDROID_NATIVE__;
     vi.unstubAllGlobals();
   });
 

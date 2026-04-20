@@ -93,8 +93,8 @@ function normalizeMetadata(
   payload: AndroidNativeMetadataPayload | null,
 ): AndroidNativeMetadataPayload {
   return {
-    displayName: trimOrNull(payload?.displayName),
-    mimeType: trimOrNull(payload?.mimeType),
+    displayName: trimOrNull(payload?.displayName) ?? undefined,
+    mimeType: trimOrNull(payload?.mimeType) ?? undefined,
     size: typeof payload?.size === 'number' && payload.size >= 0 ? payload.size : undefined,
     writable: typeof payload?.writable === 'boolean' ? payload.writable : undefined,
   };
