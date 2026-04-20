@@ -71,6 +71,7 @@ export default defineConfig({
       hopOverride('core/font-loader'),
       hopOverride('core/bridge-factory'),
       hopOverride('core/desktop-events'),
+      hopOverride('core/mobile-events'),
       hopOverride('core/tauri-bridge'),
       hopOverride('command/shortcut-map'),
       hopOverride('command/commands/file'),

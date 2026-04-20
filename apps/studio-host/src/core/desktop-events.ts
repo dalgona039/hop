@@ -1,6 +1,6 @@
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { EventBus } from '@/core/event-bus';
-import { isTauriRuntime } from '@/core/bridge-factory';
+import { isTauriDesktopRuntime } from '@/core/bridge-factory';
 import type { DesktopBridgeApi, DesktopLoadPayload } from './tauri-bridge';
 
 type DesktopRuntimeBridge = Partial<
@@ -32,7 +32,7 @@ export async function setupDesktopEvents({
   eventBus,
   setMessage,
 }: DesktopEventsOptions): Promise<void> {
-  if (!isTauriRuntime()) return;
+  if (!isTauriDesktopRuntime()) return;
 
   const desktop = bridge as DesktopRuntimeBridge;
   const { listen } = await import('@tauri-apps/api/event');
@@ -62,7 +62,7 @@ export async function setupDesktopEvents({
 
   await currentWindow.listen('tauri://drag-enter', (event) => {
     const payload = event.payload as { paths?: string[] };
-    if (hasSupportedDocumentPath(payload.paths ?? [])) {
+    if (hasSupportedDocumentTarget(payload.paths ?? [])) {
       setDesktopDragActive(true);
       setMessage('HWP/HWPX 파일을 놓으면 문서를 엽니다');
     }
@@ -116,8 +116,16 @@ async function handleDesktopCloseRequest(
   }
 }
 
-function hasSupportedDocumentPath(paths: string[]): boolean {
-  return paths.some((value) => /\.(hwp|hwpx)$/i.test(value));
+function hasSupportedDocumentTarget(paths: string[]): boolean {
+  return paths.some(isSupportedDocumentTarget);
+}
+
+function isSupportedDocumentTarget(value: string): boolean {
+  return /\.(hwp|hwpx)(?:$|[?#])/i.test(value);
+}
+
+function isContentUriTarget(value: string): boolean {
+  return value.toLowerCase().startsWith('content://');
 }
 
 function setDesktopDragActive(active: boolean): void {
@@ -135,16 +143,22 @@ async function openLatestDesktopDocument({
   paths: string[];
   setMessage(message: string): void;
 }): Promise<void> {
-  const path = [...paths].reverse().find((value) => /\.(hwp|hwpx)$/i.test(value));
-  if (!path) {
+  const target = [...paths].reverse().find(isSupportedDocumentTarget);
+  if (!target) {
     if (paths.length > 0) setMessage('HWP/HWPX 파일만 열 수 있습니다');
     return;
   }
+
+  if (isContentUriTarget(target)) {
+    setMessage('content URI 파일은 모바일 파일 브리지 구현 후 자동으로 열립니다');
+    return;
+  }
+
   if (!bridge.openDocumentByPath) return;
 
   try {
     setMessage('파일 로딩 중...');
-    const loaded = await bridge.openDocumentByPath(path);
+    const loaded = await bridge.openDocumentByPath(target);
     if (loaded) eventBus.emit('desktop-document-loaded', loaded);
   } catch (error) {
     const errMsg = `파일 로드 실패: ${error}`;

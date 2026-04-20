@@ -1,6 +1,7 @@
 import { fileCommands as upstreamFileCommands } from '@upstream/command/commands/file';
 import type { CommandDef, CommandServices } from '@/command/types';
 import type { DesktopBridgeApi } from '@/core/tauri-bridge';
+import { isTauriMobileRuntime } from '@/core/bridge-factory';
 import { openPrintDialog } from '@/ui/print-dialog';
 
 type DesktopFileBridge = Pick<
@@ -16,6 +17,7 @@ type DesktopFileBridge = Pick<
 const upstreamById = new Map(upstreamFileCommands.map((command) => [command.id, command]));
 
 function desktopBridge(wasm: unknown): DesktopFileBridge | null {
+  if (isTauriMobileRuntime()) return null;
   if (!wasm || typeof wasm !== 'object') return null;
   const candidate = wasm as Partial<DesktopFileBridge>;
   return typeof candidate.openDocumentFromDialog === 'function'
@@ -104,6 +106,10 @@ const hopOnlyCommands: CommandDef[] = [
     async execute(services) {
       const desktop = desktopBridge(services.wasm);
       if (!desktop) {
+        if (isTauriMobileRuntime()) {
+          emitStatus(services, '모바일에서는 새 창을 지원하지 않습니다.');
+          return;
+        }
         window.open(window.location.href, '_blank');
         return;
       }

@@ -171,6 +171,44 @@ impl DocumentSessionManager {
         Ok(result)
     }
 
+    pub fn open_document_from_payload(
+        &mut self,
+        file_name: String,
+        format: DocumentFormat,
+        bytes: &[u8],
+    ) -> Result<DocumentOpenResult, String> {
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("문서 파싱 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("편집 가능 문서 변환 실패: {}", e))?;
+
+        let doc_id = Uuid::new_v4().to_string();
+        let normalized_name = if file_name.trim().is_empty() {
+            match format {
+                DocumentFormat::Hwp => "document.hwp".to_string(),
+                DocumentFormat::Hwpx => "document.hwpx".to_string(),
+            }
+        } else {
+            file_name
+        };
+
+        let session = DocumentSession {
+            doc_id: doc_id.clone(),
+            source_path: None,
+            source_format: format,
+            source_fingerprint: None,
+            dirty: false,
+            revision: 1,
+            core,
+            page_svg_cache: HashMap::new(),
+        };
+
+        let result = session.open_result(normalized_name);
+        self.sessions.insert(doc_id.clone(), session);
+        self.active_doc_id = Some(doc_id);
+        Ok(result)
+    }
+
     pub fn close_document(&mut self, doc_id: &str) -> Result<(), String> {
         self.sessions
             .remove(doc_id)
@@ -259,6 +297,51 @@ impl DocumentSessionManager {
                 .source_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().to_string()),
+            format: session.source_format,
+            revision: session.revision,
+            dirty: session.dirty,
+            warnings: Vec::new(),
+        })
+    }
+
+    pub fn export_hwp_bytes(
+        &self,
+        doc_id: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<Vec<u8>, String> {
+        let session = self.session(doc_id)?;
+        session.check_revision(expected_revision)?;
+        session
+            .core
+            .export_hwp_native()
+            .map_err(|e| format!("HWP 직렬화 실패: {}", e))
+    }
+
+    pub fn commit_external_hwp_save(
+        &mut self,
+        doc_id: &str,
+        bytes: &[u8],
+        expected_revision: Option<u64>,
+    ) -> Result<SaveResult, String> {
+        let session = self.session_mut(doc_id)?;
+        session.check_revision(expected_revision)?;
+
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("저장 바이트 검증 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("저장 문서 변환 실패: {}", e))?;
+
+        session.core = core;
+        session.source_path = None;
+        session.source_format = DocumentFormat::Hwp;
+        session.source_fingerprint = None;
+        session.revision += 1;
+        session.dirty = false;
+        session.page_svg_cache.clear();
+
+        Ok(SaveResult {
+            doc_id: session.doc_id.clone(),
+            source_path: None,
             format: session.source_format,
             revision: session.revision,
             dirty: session.dirty,

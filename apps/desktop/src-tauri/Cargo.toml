@@ -21,15 +21,17 @@ rhwp = { path = "../../../third_party/rhwp" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-store = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
-open = "5"
 svg2pdf = "0.13"
 usvg = "0.45"
 pdf-writer = "0.12"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-window-state = "2"
+open = "5"

@@ -39,14 +39,28 @@ export interface DesktopLoadPayload {
   message: string;
 }
 
+export interface ExternalSavePayload {
+  docId: string;
+  revision: number;
+  fileName: string;
+  bytes: number[];
+}
+
 export interface DesktopBridgeApi {
   openDocumentFromDialog(): Promise<DesktopLoadPayload | null>;
   openDocumentByPath(path: string): Promise<DesktopLoadPayload | null>;
+  openDocumentWithExternalBytes(
+    fileName: string,
+    bytes: Uint8Array,
+    format?: DocumentFormat,
+  ): Promise<DesktopLoadPayload | null>;
   takePendingOpenPaths(): Promise<string[]>;
   createNewDocumentAsync(): Promise<DesktopLoadPayload | null>;
   createNewWindow(): Promise<string>;
   saveDocumentFromCommand(): Promise<DesktopSaveResult | null>;
   saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null>;
+  exportHwpBytesForExternalSave(): Promise<ExternalSavePayload>;
+  commitExternalHwpSave(bytes: Uint8Array, fileName?: string): Promise<DesktopSaveResult>;
   exportPdfFromCommand(): Promise<string | null>;
   printCurrentWebview(): Promise<void>;
   destroyCurrentWindow(): Promise<void>;
@@ -88,6 +102,33 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
       };
     } catch (error) {
       await this.closeNativeDocument(result.document.docId);
+      throw error;
+    }
+  }
+
+  async openDocumentWithExternalBytes(
+    fileName: string,
+    bytes: Uint8Array,
+    format?: DocumentFormat,
+  ): Promise<DesktopLoadPayload | null> {
+    if (!(await this.confirmReadyForDocumentReplacement())) return null;
+
+    const document = await this.invoke<NativeOpenResult>('open_document_with_payload', {
+      fileName,
+      format,
+      bytes: Array.from(bytes),
+    });
+    const previousDocId = this.docId;
+    try {
+      const info = super.loadDocument(bytes, document.fileName);
+      this.applyNativeOpenResult(document);
+      await this.closeReplacedDocument(previousDocId, document.docId);
+      return {
+        docInfo: info,
+        message: `${document.fileName} — ${info.pageCount}페이지`,
+      };
+    } catch (error) {
+      await this.closeNativeDocument(document.docId);
       throw error;
     }
   }
@@ -135,6 +176,29 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     const targetPath = await this.selectSavePath(this.suggestedHwpName(), 'HWP 문서', ['hwp']);
     if (!targetPath) return null;
     return this.saveHwpBytes(docId, this.withExtension(targetPath, 'hwp'));
+  }
+
+  async exportHwpBytesForExternalSave(): Promise<ExternalSavePayload> {
+    const docId = this.ensureDocumentLoaded();
+    return this.invoke<ExternalSavePayload>('export_hwp_bytes_for_external_save', {
+      docId,
+      expectedRevision: this.revision,
+    });
+  }
+
+  async commitExternalHwpSave(bytes: Uint8Array, fileName?: string): Promise<DesktopSaveResult> {
+    const docId = this.ensureDocumentLoaded();
+    const result = await this.invoke<DesktopSaveResult>('commit_external_hwp_save', {
+      docId,
+      bytes: Array.from(bytes),
+      expectedRevision: this.revision,
+    });
+    this.applyNativeSaveResult(result);
+    if (!result.sourcePath && fileName) {
+      this.fileName = fileName;
+      this.updateDocumentTitle();
+    }
+    return result;
   }
 
   async exportPdfFromCommand(): Promise<string | null> {

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fileCommands } from './file';
 
 const upstreamOpen = vi.hoisted(() => vi.fn());
 const upstreamSave = vi.hoisted(() => vi.fn());
 const openPrintDialog = vi.hoisted(() => vi.fn());
+const isTauriMobileRuntimeMock = vi.hoisted(() => vi.fn(() => false));
 
 vi.mock('@upstream/command/commands/file', () => ({
   fileCommands: [
@@ -17,14 +17,24 @@ vi.mock('@/ui/print-dialog', () => ({
   openPrintDialog,
 }));
 
+vi.mock('@/core/bridge-factory', () => ({
+  isTauriMobileRuntime: () => isTauriMobileRuntimeMock(),
+}));
+
+let loadedFileCommands: Array<{ id: string; execute: (services: unknown) => Promise<unknown> | unknown }> = [];
+
 describe('file command desktop overrides', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.resetModules();
+    isTauriMobileRuntimeMock.mockReturnValue(false);
     (globalThis as { alert?: unknown }).alert = vi.fn();
     (globalThis as { window?: unknown }).window = { location: { href: 'http://localhost/' }, open: vi.fn() };
     (globalThis as { document?: unknown }).document = {
       getElementById: vi.fn(() => ({ textContent: 'ready' })),
     };
+
+    ({ fileCommands: loadedFileCommands } = await import('./file'));
   });
 
   it('falls back to upstream open when no desktop bridge is available', async () => {
@@ -91,10 +101,26 @@ describe('file command desktop overrides', () => {
 
     expect(globalThis.alert).toHaveBeenCalledWith('PDF 내보내기는 HOP 데스크톱 앱에서 지원합니다.');
   });
+
+  it('opens browser tab for new-window fallback outside mobile runtime', async () => {
+    await command('file:new-window').execute(services({ wasm: {} }) as never);
+
+    expect(globalThis.window?.open).toHaveBeenCalledWith('http://localhost/', '_blank');
+  });
+
+  it('does not open browser tab for new-window on mobile runtime', async () => {
+    isTauriMobileRuntimeMock.mockReturnValue(true);
+    const eventBus = { emit: vi.fn() };
+
+    await command('file:new-window').execute(services({ wasm: {}, eventBus }) as never);
+
+    expect(globalThis.window?.open).not.toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-status', '모바일에서는 새 창을 지원하지 않습니다.');
+  });
 });
 
 function command(id: string) {
-  const found = fileCommands.find((item) => item.id === id);
+  const found = loadedFileCommands.find((item) => item.id === id);
   if (!found) throw new Error(`missing command ${id}`);
   return found;
 }

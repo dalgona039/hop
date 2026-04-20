@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TauriBridge } from './tauri-bridge';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 const saveMock = vi.hoisted(() => vi.fn());
 const openMock = vi.hoisted(() => vi.fn());
 const messageMock = vi.hoisted(() => vi.fn());
+let TauriBridgeCtor: new () => Record<string, unknown>;
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
@@ -41,13 +41,15 @@ vi.mock('@/core/wasm-bridge', () => ({
 }));
 
 describe('TauriBridge', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    vi.resetModules();
     (globalThis as { document?: { title: string } }).document = { title: '' };
+    ({ TauriBridge: TauriBridgeCtor } = await import('./tauri-bridge'));
   });
 
   it('opens a native document by path, mirrors bytes into wasm, and updates title state', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     invokeMock.mockResolvedValue({
       document: nativeOpenResult({
         docId: 'doc-opened',
@@ -74,7 +76,7 @@ describe('TauriBridge', () => {
   });
 
   it('cleans up a newly opened native document when wasm loading fails', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     getWasmMock(bridge, 'loadDocumentMock').mockImplementationOnce(() => {
       throw new Error('bad wasm load');
     });
@@ -95,7 +97,7 @@ describe('TauriBridge', () => {
   });
 
   it('closes the replaced native document after opening a new one', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     invokeMock
       .mockResolvedValueOnce({
         document: nativeOpenResult({ docId: 'old-doc', fileName: 'old.hwp' }),
@@ -115,7 +117,7 @@ describe('TauriBridge', () => {
   });
 
   it('opens a document selected from the Tauri dialog', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     openMock.mockResolvedValue('/tmp/dialog.hwpx');
     invokeMock.mockResolvedValue({
       document: nativeOpenResult({
@@ -137,7 +139,7 @@ describe('TauriBridge', () => {
   });
 
   it('creates a new native document and releases it if wasm creation fails', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     getWasmMock(bridge, 'createNewDocumentMock').mockImplementationOnce(() => {
       throw new Error('new doc failed');
     });
@@ -153,7 +155,7 @@ describe('TauriBridge', () => {
   });
 
   it('tracks dirty state in the document title and mirrors it natively', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     invokeMock.mockResolvedValue(undefined);
 
     applyOpenResult(bridge, {
@@ -180,7 +182,7 @@ describe('TauriBridge', () => {
   });
 
   it('blocks direct save for HWPX sources', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     applyOpenResult(bridge, {
       docId: 'doc-1',
       fileName: 'source.hwpx',
@@ -196,7 +198,7 @@ describe('TauriBridge', () => {
   });
 
   it('saves HWP bytes through native state with extension and revision guards', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     applyOpenResult(bridge, {
       docId: 'doc-1',
       fileName: 'source.hwp',
@@ -242,7 +244,7 @@ describe('TauriBridge', () => {
   });
 
   it('returns null when the user cancels an external overwrite warning', async () => {
-    const bridge = new TauriBridge();
+    const bridge = new TauriBridgeCtor();
     applyOpenResult(bridge, {
       docId: 'doc-1',
       fileName: 'source.hwp',
@@ -268,7 +270,7 @@ describe('TauriBridge', () => {
   });
 });
 
-function applyOpenResult(bridge: TauriBridge, result: Record<string, unknown>) {
+function applyOpenResult(bridge: Record<string, unknown>, result: Record<string, unknown>) {
   (bridge as unknown as { applyNativeOpenResult(result: Record<string, unknown>): void })
     .applyNativeOpenResult(result);
 }
@@ -287,6 +289,9 @@ function nativeOpenResult(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function getWasmMock(bridge: TauriBridge, name: 'loadDocumentMock' | 'createNewDocumentMock' | 'exportHwpMock') {
+function getWasmMock(
+  bridge: Record<string, unknown>,
+  name: 'loadDocumentMock' | 'createNewDocumentMock' | 'exportHwpMock',
+) {
   return (bridge as unknown as Record<typeof name, ReturnType<typeof vi.fn>>)[name];
 }

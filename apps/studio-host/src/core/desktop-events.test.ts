@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDesktopDocument, setupDesktopEvents } from './desktop-events';
 
 const tauriListen = vi.hoisted(() => vi.fn());
+const desktopRuntimeFlags = vi.hoisted(() => ({ mobile: false }));
 const currentWindow = vi.hoisted(() => ({
   listen: vi.fn(),
   onCloseRequested: vi.fn(),
@@ -16,12 +17,17 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 }));
 
 vi.mock('@/core/bridge-factory', () => ({
-  isTauriRuntime: () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window,
+  isTauriDesktopRuntime: () => {
+    return typeof window !== 'undefined'
+      && '__TAURI_INTERNALS__' in window
+      && !desktopRuntimeFlags.mobile;
+  },
 }));
 
 describe('desktop events', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    desktopRuntimeFlags.mobile = false;
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { document?: unknown }).document;
   });
@@ -31,6 +37,21 @@ describe('desktop events', () => {
   });
 
   it('does nothing outside the Tauri runtime', async () => {
+    await setupDesktopEvents({
+      bridge: {},
+      dispatcher: { dispatch: vi.fn() } as never,
+      eventBus: { emit: vi.fn() } as never,
+      setMessage: vi.fn(),
+    });
+
+    expect(tauriListen).not.toHaveBeenCalled();
+    expect(currentWindow.listen).not.toHaveBeenCalled();
+  });
+
+  it('does nothing on Tauri mobile runtime', async () => {
+    desktopRuntimeFlags.mobile = true;
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+
     await setupDesktopEvents({
       bridge: {},
       dispatcher: { dispatch: vi.fn() } as never,
@@ -92,6 +113,32 @@ describe('desktop events', () => {
     });
 
     expect(setMessage).toHaveBeenCalledWith('HWP/HWPX 파일만 열 수 있습니다');
+    expect(bridge.openDocumentByPath).not.toHaveBeenCalled();
+  });
+
+  it('defers content URI targets until mobile file bridge is wired', async () => {
+    const { windowHandlers } = installTauriWindowMocks();
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    installDocumentStub();
+
+    const setMessage = vi.fn();
+    const bridge = {
+      takePendingOpenPaths: vi.fn().mockResolvedValue([]),
+      openDocumentByPath: vi.fn(),
+    };
+
+    await setupDesktopEvents({
+      bridge,
+      dispatcher: { dispatch: vi.fn() } as never,
+      eventBus: { emit: vi.fn() } as never,
+      setMessage,
+    });
+
+    await windowHandlers.get('hop-open-paths')?.({
+      payload: { paths: ['content://com.example.documents/hwp/sample.hwp'] },
+    });
+
+    expect(setMessage).toHaveBeenCalledWith('content URI 파일은 모바일 파일 브리지 구현 후 자동으로 열립니다');
     expect(bridge.openDocumentByPath).not.toHaveBeenCalled();
   });
 

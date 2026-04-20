@@ -2,6 +2,7 @@ import { createBridge, isTauriRuntime } from '@/core/bridge-factory';
 import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { createDesktopDocument, setupDesktopEvents } from '@/core/desktop-events';
+import { setupMobileEvents } from '@/core/mobile-events';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
 import { Toolbar } from '@/ui/toolbar';
@@ -188,6 +189,13 @@ async function initialize(): Promise<void> {
     void setupDesktopEvents({
       bridge: wasm,
       dispatcher,
+      eventBus,
+      setMessage: (message) => {
+        sbMessage().textContent = message;
+      },
+    });
+    void setupMobileEvents({
+      bridge: wasm,
       eventBus,
       setMessage: (message) => {
         sbMessage().textContent = message;

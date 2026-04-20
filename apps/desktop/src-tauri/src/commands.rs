@@ -5,7 +5,7 @@ use crate::state::{
 use rhwp::DocumentCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use uuid::Uuid;
 
@@ -30,6 +30,15 @@ pub struct JobProgress {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentOpenWithBytesResult {
     pub document: DocumentOpenResult,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalSavePayload {
+    pub doc_id: String,
+    pub revision: u64,
+    pub file_name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -69,6 +78,67 @@ pub fn open_document_with_bytes(
         .map_err(|_| "문서 세션 잠금 실패".to_string())?
         .open_document_from_bytes(path_buf, &bytes)?;
     Ok(DocumentOpenWithBytesResult { document, bytes })
+}
+
+#[tauri::command]
+pub fn open_document_with_payload(
+    file_name: String,
+    format: Option<DocumentFormat>,
+    bytes: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<DocumentOpenResult, String> {
+    let resolved_format = format
+        .or_else(|| infer_format_from_file_name(&file_name))
+        .unwrap_or(DocumentFormat::Hwp);
+
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "문서 세션 잠금 실패".to_string())?
+        .open_document_from_payload(file_name, resolved_format, &bytes)
+}
+
+#[tauri::command]
+pub fn export_hwp_bytes_for_external_save(
+    doc_id: String,
+    expected_revision: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<ExternalSavePayload, String> {
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "문서 세션 잠금 실패".to_string())?;
+
+    let bytes = sessions.export_hwp_bytes(&doc_id, expected_revision)?;
+    let session = sessions.session(&doc_id)?;
+    let file_name = session
+        .source_path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| "document.hwp".to_string());
+
+    Ok(ExternalSavePayload {
+        doc_id: session.doc_id.clone(),
+        revision: session.revision,
+        file_name,
+        bytes,
+    })
+}
+
+#[tauri::command]
+pub fn commit_external_hwp_save(
+    doc_id: String,
+    bytes: Vec<u8>,
+    expected_revision: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<SaveResult, String> {
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "문서 세션 잠금 실패".to_string())?
+        .commit_external_hwp_save(&doc_id, &bytes, expected_revision)
 }
 
 #[tauri::command]
@@ -269,9 +339,11 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
             reveal_path.display()
         ));
     }
-    open::that(reveal_path).map_err(|e| format!("파일 위치를 열 수 없습니다: {}", e))
+    open_path_with_default_app(reveal_path)
+        .map_err(|e| format!("파일 위치를 열 수 없습니다: {}", e))
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 pub fn print_webview(window: WebviewWindow) -> Result<(), String> {
     window
@@ -279,6 +351,13 @@ pub fn print_webview(window: WebviewWindow) -> Result<(), String> {
         .map_err(|e| format!("인쇄 대화상자를 열 수 없습니다: {}", e))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[tauri::command]
+pub fn print_webview(_window: WebviewWindow) -> Result<(), String> {
+    Err("이 플랫폼에서는 인쇄 대화상자를 지원하지 않습니다".to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 pub fn destroy_current_window(window: WebviewWindow) -> Result<(), String> {
     window
@@ -286,11 +365,24 @@ pub fn destroy_current_window(window: WebviewWindow) -> Result<(), String> {
         .map_err(|e| format!("창을 닫을 수 없습니다: {}", e))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[tauri::command]
+pub fn destroy_current_window(_window: WebviewWindow) -> Result<(), String> {
+    Err("이 플랫폼에서는 현재 창 종료를 지원하지 않습니다".to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 pub async fn create_editor_window(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || crate::windows::create_editor_window(&app))
         .await
         .map_err(|e| format!("새 창 생성 작업 실패: {}", e))?
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[tauri::command]
+pub async fn create_editor_window(_app: AppHandle) -> Result<String, String> {
+    Err("이 플랫폼에서는 새 창 생성을 지원하지 않습니다".to_string())
 }
 
 fn export_pdf_from_core(
@@ -312,7 +404,7 @@ fn export_pdf_from_core(
     )?;
 
     if open_after {
-        open::that(&path).map_err(|e| {
+        open_path_with_default_app(&path).map_err(|e| {
             format!(
                 "파일은 저장됐지만 OS 기본 앱으로 열 수 없습니다: {} ({})",
                 path.display(),
@@ -332,6 +424,16 @@ fn export_pdf_from_core(
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn open_path_with_default_app(path: &Path) -> Result<(), String> {
+    open::that(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn open_path_with_default_app(_path: &Path) -> Result<(), String> {
+    Err("이 플랫폼에서는 OS 기본 앱 열기를 지원하지 않습니다".to_string())
+}
+
 fn emit_progress(app: &AppHandle, job_id: &str, phase: &str, done: u32, total: u32, message: &str) {
     let _ = app.emit(
         "hop-job-progress",
@@ -343,4 +445,16 @@ fn emit_progress(app: &AppHandle, job_id: &str, phase: &str, done: u32, total: u
             message: message.to_string(),
         },
     );
+}
+
+fn infer_format_from_file_name(file_name: &str) -> Option<DocumentFormat> {
+    Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .and_then(|ext| match ext.as_str() {
+            "hwp" => Some(DocumentFormat::Hwp),
+            "hwpx" => Some(DocumentFormat::Hwpx),
+            _ => None,
+        })
 }
