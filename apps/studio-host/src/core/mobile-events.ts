@@ -48,6 +48,7 @@ export async function setupMobileEvents({
 }
 
 function isSupportedDocumentTarget(value: string): boolean {
+  if (value.toLowerCase().startsWith('content://')) return true;
   return /\.(hwp|hwpx)(?:$|[?#])/i.test(value);
 }
 
@@ -84,6 +85,10 @@ async function openLatestMobileDocument({
     let loaded: DesktopLoadPayload | null = null;
     if (target.toLowerCase().startsWith('content://')) {
       const openTarget = await resolveContentUriOpenTarget(target);
+      if (!openTarget.format) {
+        setMessage('HWP/HWPX 파일만 열 수 있습니다');
+        return;
+      }
 
       if (openTarget.kind === 'path') {
         if (!bridge.openDocumentByPath) {

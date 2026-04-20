@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 const upstreamSrc = resolve(__dirname, '../../third_party/rhwp/rhwp-studio/src');
 const hopSrc = resolve(__dirname, 'src');
+const testStubSrc = resolve(__dirname, 'test-stubs');
 
 const hopOverride = (id: string) => ({
   find: `@/${id}`,
@@ -19,6 +20,8 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      { find: '@/core/wasm-bridge', replacement: resolve(testStubSrc, 'wasm-bridge.ts') },
+      { find: '@/core/types', replacement: resolve(testStubSrc, 'types.ts') },
       hopOverride('core/font-loader'),
       hopOverride('core/bridge-factory'),
       hopOverride('core/desktop-events'),
