@@ -90,6 +90,15 @@ pub fn close_document(doc_id: String, state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+pub fn mark_document_dirty(doc_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "문서 세션 잠금 실패".to_string())?
+        .mark_document_dirty(&doc_id)
+}
+
+#[tauri::command]
 pub fn save_document(
     doc_id: String,
     expected_revision: Option<u64>,

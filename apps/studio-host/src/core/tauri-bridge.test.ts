@@ -152,8 +152,9 @@ describe('TauriBridge', () => {
     expect(invokeMock).toHaveBeenCalledWith('close_document', { docId: 'new-native' });
   });
 
-  it('tracks dirty state in the document title', () => {
+  it('tracks dirty state in the document title and mirrors it natively', async () => {
     const bridge = new TauriBridge();
+    invokeMock.mockResolvedValue(undefined);
 
     applyOpenResult(bridge, {
       docId: 'doc-1',
@@ -170,6 +171,9 @@ describe('TauriBridge', () => {
     expect(bridge.hasUnsavedChanges()).toBe(false);
 
     bridge.markDocumentDirty();
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('mark_document_dirty', { docId: 'doc-1' });
+    });
 
     expect(bridge.hasUnsavedChanges()).toBe(true);
     expect(document.title).toBe('• source.hwp - HOP');

@@ -169,6 +169,9 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   markDocumentDirty(): void {
     if (!this.docId || this.dirty) return;
     this.dirty = true;
+    void this.invoke<void>('mark_document_dirty', { docId: this.docId }).catch((error: unknown) => {
+      console.warn('[TauriBridge] native dirty state update failed:', error);
+    });
     this.updateDocumentTitle();
   }
 

@@ -181,6 +181,17 @@ impl DocumentSessionManager {
         Ok(())
     }
 
+    #[cfg(not(debug_assertions))]
+    pub fn has_dirty_sessions(&self) -> bool {
+        self.sessions.values().any(|session| session.dirty)
+    }
+
+    pub fn mark_document_dirty(&mut self, doc_id: &str) -> Result<(), String> {
+        let session = self.session_mut(doc_id)?;
+        session.dirty = true;
+        Ok(())
+    }
+
     pub fn save_document(
         &mut self,
         doc_id: &str,
@@ -908,5 +919,16 @@ mod tests {
 
         assert_eq!(manager.active_doc_id, Some(first.doc_id));
         assert!(manager.close_document("missing").is_err());
+    }
+
+    #[test]
+    fn mark_document_dirty_updates_session_dirty_state() {
+        let mut manager = DocumentSessionManager::default();
+        let opened = manager.create_document().unwrap();
+
+        manager.mark_document_dirty(&opened.doc_id).unwrap();
+
+        assert!(manager.session(&opened.doc_id).unwrap().dirty);
+        assert!(manager.mark_document_dirty("missing").is_err());
     }
 }

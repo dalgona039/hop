@@ -3,6 +3,8 @@ mod commands;
 mod menu;
 mod pdf_export;
 mod state;
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+mod updates;
 mod windows;
 
 use std::path::{Path, PathBuf};
@@ -10,9 +12,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use commands::{
     check_external_modification, close_document, create_document, create_editor_window,
-    destroy_current_window, export_pdf, export_pdf_from_hwp_bytes, mutate_document, open_document,
-    open_document_with_bytes, print_webview, query_document, render_page_svg, reveal_in_folder,
-    save_document, save_document_as, save_hwp_bytes, take_pending_open_paths,
+    destroy_current_window, export_pdf, export_pdf_from_hwp_bytes, mark_document_dirty,
+    mutate_document, open_document, open_document_with_bytes, print_webview, query_document,
+    render_page_svg, reveal_in_folder, save_document, save_document_as, save_hwp_bytes,
+    take_pending_open_paths,
 };
 use state::AppState;
 
@@ -23,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             let paths = document_paths_from_args(&args, &cwd);
@@ -39,6 +43,8 @@ pub fn run() {
                 windows::install_editor_window_size_guard(&window);
                 windows::attach_document_drop_handler(app.handle(), &window);
             }
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            updates::install_startup_update_check(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,6 +52,7 @@ pub fn run() {
             create_editor_window,
             open_document,
             close_document,
+            mark_document_dirty,
             save_document,
             save_document_as,
             render_page_svg,

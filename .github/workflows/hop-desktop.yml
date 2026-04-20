@@ -161,6 +161,8 @@ jobs:
       - name: Resolve release settings
         id: release
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
 
@@ -184,12 +186,27 @@ jobs:
               echo "::error::Release builds must include both macOS arm64 and macOS x64 because the README and website link directly to both signed/notarized .dmg assets."
               exit 1
             fi
+
+            if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for release builds because updater artifacts must be signed."
+              exit 1
+            fi
           fi
 
           if [[ "$create_release" == "true" ]]; then
             if [[ ! "$release_tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?([+][0-9A-Za-z.-]+)?$ ]]; then
               echo "::error::Desktop release tags must use vMAJOR.MINOR.PATCH, for example v0.1.0."
               exit 1
+            fi
+
+            app_version="$(git show "${{ steps.ref.outputs.build_ref }}:apps/desktop/src-tauri/tauri.conf.json" | jq -r '.version')"
+            if [[ "$release_tag" != "v${app_version}" ]]; then
+              echo "::error::release_tag (${release_tag}) must match apps/desktop/src-tauri/tauri.conf.json version (${app_version}) to prevent updater version loops."
+              exit 1
+            fi
+
+            if [[ "$prerelease" == "true" ]]; then
+              echo "::warning::GitHub /releases/latest/download/latest.json does not serve draft releases and generally does not serve prereleases. Prerelease builds are uploaded for manual testing, not the stable auto-update channel."
             fi
 
             if [[ "${{ steps.ref.outputs.build_ref }}" != "$release_tag" ]]; then
@@ -394,7 +411,11 @@ jobs:
           fi
 
           export_env_if_set TAURI_SIGNING_PRIVATE_KEY
-          export_env_if_set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
+            export_env_if_set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          elif [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          fi
           export_env_if_set AZURE_CLIENT_ID
           export_env_if_set AZURE_CLIENT_SECRET
           export_env_if_set AZURE_TENANT_ID
@@ -453,13 +474,34 @@ jobs:
           fi
           echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
 
+      - name: Clear stale bundle outputs
+        shell: bash
+        run: find apps/desktop/src-tauri/target -type d -name bundle -prune -exec rm -rf {} +
+
+      - name: Resolve Tauri build args
+        id: tauri-build-args
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tauri_args="${{ matrix.args }}"
+          if [[ "${{ needs.prepare.outputs.create_release }}" == "true" ]]; then
+            tauri_args="${tauri_args:+$tauri_args }--config {\"bundle\":{\"createUpdaterArtifacts\":true}}"
+          fi
+
+          {
+            echo "args<<EOF"
+            printf '%s\n' "$tauri_args"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Tauri bundle
         id: tauri
         uses: tauri-apps/tauri-action@v0.6.2
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
-          args: ${{ matrix.args }}
+          args: ${{ steps.tauri-build-args.outputs.args }}
 
       - name: Collect Tauri artifact paths
         id: tauri-artifacts
@@ -469,8 +511,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          raw_artifact_list="$RUNNER_TEMP/tauri-artifacts-${{ matrix.name }}-raw.txt"
           artifact_list="$RUNNER_TEMP/tauri-artifacts-${{ matrix.name }}.txt"
-          node -e "const paths = JSON.parse(process.env.ARTIFACT_PATHS || '[]'); if (!Array.isArray(paths) || paths.length === 0) process.exit(1); for (const artifactPath of paths) console.log(artifactPath);" > "$artifact_list"
+          node -e "const paths = JSON.parse(process.env.ARTIFACT_PATHS || '[]'); if (!Array.isArray(paths) || paths.length === 0) process.exit(1); for (const artifactPath of paths) console.log(artifactPath);" > "$raw_artifact_list"
+
+          {
+            cat "$raw_artifact_list"
+            while IFS= read -r artifact_path; do
+              [[ -f "${artifact_path}.sig" ]] && printf '%s\n' "${artifact_path}.sig"
+            done < "$raw_artifact_list"
+            find apps/desktop/src-tauri/target \
+              -path "*/bundle/*" \
+              -type f \
+              \( \
+                -name "*.dmg" \
+                -o -name "*.msi" \
+                -o -name "*.exe" \
+                -o -name "*.AppImage" \
+                -o -name "*.deb" \
+                -o -name "*.rpm" \
+                -o -name "*.app.tar.gz" \
+                -o -name "*.sig" \
+                -o -name "*.blockmap" \
+              \)
+          } | sed '/^[[:space:]]*$/d' | sort -u > "$artifact_list"
 
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           cat "$artifact_list" >> "$GITHUB_OUTPUT"
@@ -502,6 +566,9 @@ jobs:
       - name: Prepare release assets
         id: assets
         shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail
           find artifacts -type f | sort
@@ -514,6 +581,8 @@ jobs:
           mkdir -p release-assets
 
           release_asset_count=0
+          updater_platforms_jsonl="$RUNNER_TEMP/hop-updater-platforms.jsonl"
+          : > "$updater_platforms_jsonl"
 
           copy_release_asset() {
             local platform="$1"
@@ -547,6 +616,46 @@ jobs:
             release_asset_count=$((release_asset_count + 1))
           }
 
+          copy_updater_asset() {
+            local platform="$1"
+            local platform_key="$2"
+            local output_name="$3"
+            shift 3
+
+            local candidate=""
+            local pattern
+            local match
+
+            for pattern in "$@"; do
+              while IFS= read -r match; do
+                if [[ -f "${match}.sig" ]]; then
+                  candidate="$match"
+                  break 2
+                fi
+              done < <(find artifacts \
+                -type f \
+                -path "*/hop-desktop-${platform}-*" \
+                -name "$pattern" \
+                ! -name "*.sig" \
+                ! -name "*.blockmap" \
+                | sort)
+            done
+
+            if [[ -z "$candidate" ]]; then
+              echo "::warning::No signed updater artifact found for ${platform}."
+              return 0
+            fi
+
+            cp "$candidate" "release-assets/${output_name}"
+            cp "${candidate}.sig" "release-assets/${output_name}.sig"
+
+            PLATFORM_KEY="$platform_key" \
+            UPDATE_URL="https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/${output_name}" \
+            SIGNATURE="$(tr -d '\r\n' < "${candidate}.sig")" \
+              node -e "const entry = { key: process.env.PLATFORM_KEY, url: process.env.UPDATE_URL, signature: process.env.SIGNATURE }; console.log(JSON.stringify(entry));" \
+              >> "$updater_platforms_jsonl"
+          }
+
           copy_release_asset "macos-arm64" "dmg" "HOP-macos-arm64.dmg"
           copy_release_asset "macos-x64" "dmg" "HOP-macos-x64.dmg"
           copy_release_asset "windows-x64" "msi" "HOP-windows-x64.msi"
@@ -556,10 +665,31 @@ jobs:
           copy_release_asset "linux-x64" "deb" "HOP-linux-x64.deb"
           copy_release_asset "linux-x64" "rpm" "HOP-linux-x64.rpm"
 
+          copy_updater_asset "macos-arm64" "darwin-aarch64-app" "HOP-updater-macos-arm64.app.tar.gz" "*.app.tar.gz"
+          copy_updater_asset "macos-arm64" "darwin-aarch64" "HOP-updater-macos-arm64.app.tar.gz" "*.app.tar.gz"
+          copy_updater_asset "macos-x64" "darwin-x86_64-app" "HOP-updater-macos-x64.app.tar.gz" "*.app.tar.gz"
+          copy_updater_asset "macos-x64" "darwin-x86_64" "HOP-updater-macos-x64.app.tar.gz" "*.app.tar.gz"
+          copy_updater_asset "windows-x64" "windows-x86_64-msi" "HOP-windows-x64.msi" "*.msi"
+          copy_updater_asset "windows-x64" "windows-x86_64-nsis" "HOP-windows-x64.exe" "*.exe"
+          copy_updater_asset "windows-x64" "windows-x86_64" "HOP-windows-x64.msi" "*.msi"
+          copy_updater_asset "linux-x64" "linux-x86_64-appimage" "HOP-linux-x64.AppImage" "*.AppImage"
+          copy_updater_asset "linux-x64" "linux-x86_64-deb" "HOP-linux-x64.deb" "*.deb"
+          copy_updater_asset "linux-x64" "linux-x86_64-rpm" "HOP-linux-x64.rpm" "*.rpm"
+          copy_updater_asset "linux-x64" "linux-x86_64" "HOP-linux-x64.AppImage" "*.AppImage"
+
           if [[ ! -f "release-assets/HOP-macos-arm64.dmg" || ! -f "release-assets/HOP-macos-x64.dmg" ]]; then
             echo "::error::macOS releases must include both HOP-macos-arm64.dmg and HOP-macos-x64.dmg."
             exit 1
           fi
+
+          if [[ ! -s "$updater_platforms_jsonl" ]]; then
+            echo "::error::No updater platforms were found. Release builds must publish latest.json with signed updater assets."
+            exit 1
+          fi
+
+          VERSION="${RELEASE_TAG#v}" \
+          UPDATER_PLATFORMS_JSONL="$updater_platforms_jsonl" \
+            node -e "const fs = require('node:fs'); const lines = fs.readFileSync(process.env.UPDATER_PLATFORMS_JSONL, 'utf8').trim().split(/\n+/).filter(Boolean); const platforms = {}; for (const line of lines) { const { key, url, signature } = JSON.parse(line); platforms[key] = { url, signature }; } const manifest = { version: process.env.VERSION, notes: 'Desktop installers for HOP.', pub_date: new Date().toISOString(), platforms }; fs.writeFileSync('release-assets/latest.json', JSON.stringify(manifest, null, 2) + '\n');"
 
           if [[ "$release_asset_count" -eq 0 ]]; then
             echo "::error::No supported release assets were found. Expected at least one macOS .dmg, Windows .msi/.exe, or Linux AppImage/.deb/.rpm artifact."
