@@ -91,6 +91,7 @@ describe('mobile events', () => {
       'sample.hwp',
       expect.any(Uint8Array),
       'hwp',
+      'content://com.example/documents/sample.hwp',
     );
     expect(eventBus.emit).toHaveBeenCalledWith('desktop-document-loaded', {
       docInfo: { pageCount: 2 },

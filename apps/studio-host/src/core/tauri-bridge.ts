@@ -1,5 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentInfo } from '@/core/types';
+import { writeUriBytes } from './android-uri-host';
 
 type DocumentFormat = 'hwp' | 'hwpx';
 
@@ -53,6 +54,7 @@ export interface DesktopBridgeApi {
     fileName: string,
     bytes: Uint8Array,
     format?: DocumentFormat,
+    sourceUri?: string,
   ): Promise<DesktopLoadPayload | null>;
   takePendingOpenPaths(): Promise<string[]>;
   createNewDocumentAsync(): Promise<DesktopLoadPayload | null>;
@@ -73,6 +75,8 @@ export interface DesktopBridgeApi {
 export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   private docId: string | null = null;
   private sourcePath: string | null = null;
+  private externalSourceUri: string | null = null;
+  private fileName = '문서';
   private sourceFormat: DocumentFormat = 'hwp';
   private revision = 0;
   private dirty = false;
@@ -95,6 +99,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     try {
       const info = super.loadDocument(new Uint8Array(result.bytes), result.document.fileName);
       this.applyNativeOpenResult(result.document);
+      this.externalSourceUri = null;
       await this.closeReplacedDocument(previousDocId, result.document.docId);
       return {
         docInfo: info,
@@ -110,6 +115,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     fileName: string,
     bytes: Uint8Array,
     format?: DocumentFormat,
+    sourceUri?: string,
   ): Promise<DesktopLoadPayload | null> {
     if (!(await this.confirmReadyForDocumentReplacement())) return null;
 
@@ -122,6 +128,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     try {
       const info = super.loadDocument(bytes, document.fileName);
       this.applyNativeOpenResult(document);
+      this.externalSourceUri = sourceUri ?? null;
       await this.closeReplacedDocument(previousDocId, document.docId);
       return {
         docInfo: info,
@@ -162,6 +169,9 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
 
   async saveDocumentFromCommand(): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
+    if (this.externalSourceUri) {
+      return this.saveExternalUriHwpBytes(docId, this.externalSourceUri);
+    }
     if (!this.sourcePath) {
       return this.saveDocumentAsFromCommand();
     }
@@ -270,6 +280,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     }
     this.docId = null;
     this.sourcePath = null;
+    this.externalSourceUri = null;
     this.dirty = false;
     this.updateDocumentTitle();
   }
@@ -304,6 +315,20 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     });
     this.applyNativeSaveResult(result);
     return result;
+  }
+
+  private async saveExternalUriHwpBytes(
+    docId: string,
+    sourceUri: string,
+  ): Promise<DesktopSaveResult | null> {
+    const payload = await this.exportHwpBytesForExternalSave();
+    const bytes = new Uint8Array(payload.bytes);
+    await this.writeExternalUriBytes(sourceUri, bytes);
+    return this.commitExternalHwpSave(bytes, payload.fileName);
+  }
+
+  private async writeExternalUriBytes(sourceUri: string, bytes: Uint8Array): Promise<void> {
+    await writeUriBytes(sourceUri, bytes);
   }
 
   private async confirmExternalOverwriteIfNeeded(
@@ -421,6 +446,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     this.revision = result.revision;
     this.dirty = result.dirty;
     if (this.sourcePath) {
+      this.externalSourceUri = null;
       this.fileName = this.sourcePath.split(/[\\/]/).pop() || this.fileName;
     }
     this.updateDocumentTitle();

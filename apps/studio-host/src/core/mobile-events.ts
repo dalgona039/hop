@@ -1,5 +1,6 @@
 import type { EventBus } from '@/core/event-bus';
 import { isTauriMobileRuntime } from '@/core/bridge-factory';
+import { readUriBytes } from './android-uri-host';
 import type { DesktopBridgeApi, DesktopLoadPayload } from './tauri-bridge';
 
 type MobileRuntimeBridge = Partial<
@@ -71,11 +72,7 @@ function normalizePathTarget(target: string): string {
 }
 
 async function readContentUriBytes(target: string): Promise<Uint8Array> {
-  const response = await fetch(target);
-  if (!response.ok) {
-    throw new Error(`content URI 읽기 실패 (${response.status})`);
-  }
-  return new Uint8Array(await response.arrayBuffer());
+  return readUriBytes(target);
 }
 
 async function openLatestMobileDocument({
@@ -106,7 +103,12 @@ async function openLatestMobileDocument({
       }
       const fileName = inferFileNameFromTarget(target);
       const bytes = await readContentUriBytes(target);
-      loaded = await bridge.openDocumentWithExternalBytes(fileName, bytes, inferDocumentFormat(fileName));
+      loaded = await bridge.openDocumentWithExternalBytes(
+        fileName,
+        bytes,
+        inferDocumentFormat(fileName),
+        target,
+      );
     } else {
       if (!bridge.openDocumentByPath) {
         setMessage('모바일 파일 열기 브리지가 준비되지 않았습니다');
