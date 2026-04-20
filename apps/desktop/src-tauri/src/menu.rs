@@ -97,9 +97,12 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     app.on_menu_event(|app, event| {
         let id = event.id().0.as_str();
         if id == "file:new-window" {
-            if let Err(error) = crate::windows::create_editor_window(app) {
-                eprintln!("[menu] 새 창 생성 실패: {}", error);
-            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::windows::create_editor_window(&app) {
+                    eprintln!("[menu] 새 창 생성 실패: {}", error);
+                }
+            });
             return;
         }
         if id.contains(':') {

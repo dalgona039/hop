@@ -278,7 +278,7 @@ pub fn destroy_current_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn create_editor_window(app: AppHandle) -> Result<String, String> {
+pub async fn create_editor_window(app: AppHandle) -> Result<String, String> {
     crate::windows::create_editor_window(&app)
 }
 
