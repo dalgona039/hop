@@ -1,16 +1,24 @@
 use std::path::PathBuf;
+use tauri::{AppHandle, Manager};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri::{
-    AppHandle, DragDropEvent, Emitter, LogicalSize, Manager, Size, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    DragDropEvent, Emitter, LogicalSize, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 use uuid::Uuid;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const MIN_EDITOR_WINDOW_WIDTH: f64 = 960.0;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const MIN_EDITOR_WINDOW_HEIGHT: f64 = 720.0;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const NEW_WINDOW_PREFERRED_WIDTH: f64 = 1100.0;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const NEW_WINDOW_PREFERRED_HEIGHT: f64 = 760.0;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const NEW_WINDOW_MAX_WORK_AREA_RATIO: f64 = 0.85;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn create_editor_window(app: &AppHandle) -> Result<String, String> {
     let label = format!("main{}", Uuid::new_v4().simple());
     let (width, height) = new_window_size(app);
@@ -29,6 +37,7 @@ pub fn create_editor_window(app: &AppHandle) -> Result<String, String> {
     Ok(label)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn new_window_size(app: &AppHandle) -> (f64, f64) {
     let (max_width, max_height) = active_monitor_logical_work_area(app)
         .map(|(width, height)| {
@@ -53,6 +62,7 @@ fn new_window_size(app: &AppHandle) -> (f64, f64) {
     )
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn active_monitor_logical_work_area(app: &AppHandle) -> Option<(f64, f64)> {
     let monitor = target_window_label(app)
         .and_then(|label| app.get_webview_window(&label))
@@ -69,6 +79,7 @@ fn active_monitor_logical_work_area(app: &AppHandle) -> Option<(f64, f64)> {
     ))
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn clamped_new_window_dimension(preferred: f64, min: f64, max: f64) -> f64 {
     if max <= 0.0 {
         return preferred.max(min);
@@ -76,11 +87,13 @@ fn clamped_new_window_dimension(preferred: f64, min: f64, max: f64) -> f64 {
     preferred.min(max).max(min)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn install_editor_window_minimum(window: &WebviewWindow) {
     let minimum = LogicalSize::new(MIN_EDITOR_WINDOW_WIDTH, MIN_EDITOR_WINDOW_HEIGHT);
     let _ = window.set_min_size(Some(Size::Logical(minimum)));
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn attach_document_drop_handler(app: &AppHandle, window: &WebviewWindow) {
     let app = app.clone();
     let label = window.label().to_string();
@@ -161,16 +174,19 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn clamped_new_window_dimension_prefers_default_within_work_area() {
         assert_eq!(clamped_new_window_dimension(1100.0, 960.0, 1400.0), 1100.0);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn clamped_new_window_dimension_caps_to_work_area() {
         assert_eq!(clamped_new_window_dimension(1100.0, 960.0, 1000.0), 1000.0);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn clamped_new_window_dimension_keeps_minimum_on_small_screens() {
         assert_eq!(clamped_new_window_dimension(1100.0, 720.0, 578.0), 720.0);
