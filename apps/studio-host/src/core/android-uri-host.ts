@@ -80,10 +80,10 @@ function normalizeReadResult(result: ReadUriResult): Uint8Array {
   throw new Error('Android URI read 결과 형식을 해석할 수 없습니다.');
 }
 
-function sanitizeDisplayName(value: string | null | undefined): string | null {
-  if (!value) return null;
+function sanitizeDisplayName(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
   const trimmed = value.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return undefined;
   return trimmed;
 }
 

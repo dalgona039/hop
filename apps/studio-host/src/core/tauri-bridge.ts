@@ -77,7 +77,6 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   private docId: string | null = null;
   private sourcePath: string | null = null;
   private externalSourceUri: string | null = null;
-  private fileName = '문서';
   private sourceFormat: DocumentFormat = 'hwp';
   private revision = 0;
   private dirty = false;

@@ -34,7 +34,11 @@ describe('file command desktop overrides', () => {
       getElementById: vi.fn(() => ({ textContent: 'ready' })),
     };
 
-    ({ fileCommands: loadedFileCommands } = await import('./file'));
+    const loaded = await import('./file');
+    loadedFileCommands = loaded.fileCommands as Array<{
+      id: string;
+      execute: (services: unknown) => Promise<unknown> | unknown;
+    }>;
   });
 
   it('falls back to upstream open when no desktop bridge is available', async () => {

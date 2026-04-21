@@ -74,7 +74,7 @@ describe('android native bootstrap', () => {
 
     installAndroidNativeHostBridge();
 
-    const host = (globalThis as {
+    const host = (globalThis as unknown as {
       __HOP_ANDROID__: {
         existingMethod: () => void;
         getUriMetadata(uri: string): { displayName?: string };

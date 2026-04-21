@@ -5,6 +5,13 @@ interface AndroidNativeMetadataPayload {
   writable?: boolean | null;
 }
 
+interface AndroidNormalizedMetadataPayload {
+  displayName?: string;
+  mimeType?: string;
+  size?: number;
+  writable?: boolean;
+}
+
 interface AndroidNativeDocumentPayload extends AndroidNativeMetadataPayload {
   base64?: string;
   bytes?: number[];
@@ -30,7 +37,7 @@ function trimOrNull(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-function parseMaybeJson<T>(value: T | string | null | undefined): T | null {
+function parseMaybeJson<T extends object>(value: T | string | null | undefined): T | null {
   if (value == null) return null;
   if (typeof value === 'object') return value as T;
 
@@ -91,7 +98,7 @@ function encodeBase64(bytes: Uint8Array): string {
 
 function normalizeMetadata(
   payload: AndroidNativeMetadataPayload | null,
-): AndroidNativeMetadataPayload {
+): AndroidNormalizedMetadataPayload {
   return {
     displayName: trimOrNull(payload?.displayName) ?? undefined,
     mimeType: trimOrNull(payload?.mimeType) ?? undefined,
@@ -124,7 +131,7 @@ export function installAndroidNativeHostBridge(): void {
   }
 
   if (typeof native.getUriMetadata === 'function') {
-    host.getUriMetadata = (uri: string): AndroidNativeMetadataPayload => {
+    host.getUriMetadata = (uri: string): AndroidNormalizedMetadataPayload => {
       const parsed = parseMaybeJson<AndroidNativeMetadataPayload>(native.getUriMetadata?.(uri));
       return normalizeMetadata(parsed);
     };
@@ -133,12 +140,12 @@ export function installAndroidNativeHostBridge(): void {
   if (typeof native.readUriDocument === 'function' || typeof native.readUriBytesBase64 === 'function') {
     host.readUriDocument = (uri: string): {
       bytes: Uint8Array;
-      displayName?: string | null;
-      mimeType?: string | null;
+      displayName?: string;
+      mimeType?: string;
       size?: number;
       writable?: boolean;
     } => {
-      const metadataGetter = host.getUriMetadata as ((targetUri: string) => AndroidNativeMetadataPayload) | undefined;
+      const metadataGetter = host.getUriMetadata as ((targetUri: string) => AndroidNormalizedMetadataPayload) | undefined;
       const metadata = metadataGetter ? metadataGetter(uri) : {};
 
       if (typeof native.readUriDocument === 'function') {

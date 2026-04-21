@@ -56,18 +56,15 @@ interface HopAndroidNativeBridge {
   persistUriPermission?(uri: string): boolean;
 }
 
-declare global {
-  var __HOP_ANDROID__: HopAndroidBridge | undefined;
-  var __HOP_ANDROID_NATIVE__: HopAndroidNativeBridge | undefined;
-  interface Window {
-    __HOP_ANDROID__?: HopAndroidBridge;
-    __HOP_ANDROID_NATIVE__?: HopAndroidNativeBridge;
-  }
+declare var __HOP_ANDROID__: HopAndroidBridge | undefined;
+declare var __HOP_ANDROID_NATIVE__: HopAndroidNativeBridge | undefined;
+
+interface Window {
+  __HOP_ANDROID__?: HopAndroidBridge;
+  __HOP_ANDROID_NATIVE__?: HopAndroidNativeBridge;
 }
 
 declare module '@wasm/rhwp.js' {
   export * from '@rhwp/core';
   export { default } from '@rhwp/core';
 }
-
-export {};
