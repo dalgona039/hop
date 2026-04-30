@@ -2,8 +2,48 @@ body.hop-mobile-runtime [data-mobile-hidden='true'] {
   display: none !important;
 }
 
+body.hop-mobile-runtime {
+  height: var(--hop-mobile-vh, 100dvh);
+}
+
 body.hop-mobile-runtime #studio-root {
+  height: var(--hop-mobile-vh, 100dvh);
   padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+body.hop-mobile-runtime #editor-area {
+  min-height: 0;
+}
+
+body.hop-mobile-runtime #scroll-container {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+
+body.hop-mobile-runtime #icon-toolbar {
+  display: flex !important;
+  height: 40px;
+  padding: 2px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.hop-mobile-runtime #icon-toolbar .tb-btn {
+  min-width: 38px;
+  padding: 2px 4px;
+}
+
+body.hop-mobile-runtime #icon-toolbar .tb-btn .tb-label {
+  display: none;
+}
+
+body.hop-mobile-runtime #style-bar {
+  display: flex !important;
+}
+
+body.hop-mobile-runtime #icon-toolbar::-webkit-scrollbar,
+body.hop-mobile-runtime #style-bar::-webkit-scrollbar {
+  display: none;
 }
 
 #hop-mobile-bottom-bar {

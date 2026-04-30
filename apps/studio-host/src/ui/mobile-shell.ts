@@ -10,17 +10,23 @@ interface MobileAction {
   id: string;
   label: string;
   icon: string;
+  primary?: boolean;
 }
 
 const MOBILE_BAR_ID = 'hop-mobile-bottom-bar';
 const MOBILE_SHEET_ID = 'hop-mobile-context-sheet';
 const LONG_PRESS_MS = 520;
+const MOBILE_VIEWPORT_CSS_VAR = '--hop-mobile-vh';
 
 const MOBILE_ACTIONS: MobileAction[] = [
-  { id: 'file:open', label: '열기', icon: '📂' },
-  { id: 'file:save', label: '저장', icon: '💾' },
+  { id: 'file:new-doc', label: '새 문서', icon: '📄', primary: true },
+  { id: 'file:open', label: '열기', icon: '📂', primary: true },
+  { id: 'file:save', label: '저장', icon: '💾', primary: true },
+  { id: 'table:create', label: '표', icon: '▦', primary: true },
   { id: 'edit:undo', label: '되돌리기', icon: '↶' },
   { id: 'edit:redo', label: '다시실행', icon: '↷' },
+  { id: 'format:font-size-increase', label: '글자 크게', icon: 'A+' },
+  { id: 'format:font-size-decrease', label: '글자 작게', icon: 'A-' },
   { id: 'file:save-as', label: '다른 이름', icon: '🗂' },
 ];
 
@@ -38,7 +44,7 @@ function createActionButton(action: MobileAction, dispatcher: CommandDispatcher)
   button.dataset.command = action.id;
   button.innerHTML = `<span class="hop-mobile-action-icon">${action.icon}</span><span class="hop-mobile-action-label">${action.label}</span>`;
   button.addEventListener('click', () => {
-    dispatcher.dispatch(action.id);
+    dispatcher.dispatch(action.id, { anchorEl: button });
   });
   return button;
 }
@@ -49,7 +55,7 @@ function ensureBottomBar(dispatcher: CommandDispatcher): void {
   const nav = document.createElement('nav');
   nav.id = MOBILE_BAR_ID;
   nav.setAttribute('aria-label', '모바일 빠른 작업');
-  for (const action of MOBILE_ACTIONS.slice(0, 4)) {
+  for (const action of MOBILE_ACTIONS.filter((action) => action.primary)) {
     nav.appendChild(createActionButton(action, dispatcher));
   }
   document.body.appendChild(nav);
@@ -72,7 +78,7 @@ function installLongPressSheet(dispatcher: CommandDispatcher, setStatus: (messag
     item.textContent = `${action.icon} ${action.label}`;
     item.addEventListener('click', () => {
       sheet.hidden = true;
-      dispatcher.dispatch(action.id);
+      dispatcher.dispatch(action.id, { anchorEl: item });
       setStatus(`${action.label} 실행`);
     });
     sheet.appendChild(item);
@@ -136,14 +142,38 @@ function installLongPressSheet(dispatcher: CommandDispatcher, setStatus: (messag
   }, { passive: true });
 }
 
+function applyMobileViewportHeight(): void {
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const roundedHeight = Math.round(viewportHeight);
+  if (roundedHeight <= 0) return;
+  document.documentElement.style.setProperty(MOBILE_VIEWPORT_CSS_VAR, `${roundedHeight}px`);
+}
+
+function installMobileViewportHeightSync(): void {
+  applyMobileViewportHeight();
+
+  let rafId = 0;
+  const scheduleUpdate = () => {
+    if (rafId !== 0) return;
+    rafId = window.requestAnimationFrame(() => {
+      rafId = 0;
+      applyMobileViewportHeight();
+    });
+  };
+
+  window.addEventListener('resize', scheduleUpdate, { passive: true });
+  window.addEventListener('orientationchange', scheduleUpdate, { passive: true });
+  window.visualViewport?.addEventListener('resize', scheduleUpdate, { passive: true });
+  window.visualViewport?.addEventListener('scroll', scheduleUpdate, { passive: true });
+}
+
 export function setupMobileShell({ dispatcher, setStatus }: MobileShellOptions): void {
   if (!isTauriMobileRuntime()) return;
   if (document.body.classList.contains('hop-mobile-runtime')) return;
 
+  installMobileViewportHeightSync();
   document.body.classList.add('hop-mobile-runtime');
   markDesktopChromeHidden('menu-bar');
-  markDesktopChromeHidden('icon-toolbar');
-  markDesktopChromeHidden('style-bar');
 
   ensureBottomBar(dispatcher);
   installLongPressSheet(dispatcher, setStatus);
