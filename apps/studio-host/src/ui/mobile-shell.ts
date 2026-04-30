@@ -17,6 +17,10 @@ const MOBILE_BAR_ID = 'hop-mobile-bottom-bar';
 const MOBILE_SHEET_ID = 'hop-mobile-context-sheet';
 const LONG_PRESS_MS = 520;
 const MOBILE_VIEWPORT_CSS_VAR = '--hop-mobile-vh';
+const MOBILE_VIEWPORT_TOP_CSS_VAR = '--hop-mobile-vt';
+const MOBILE_VIEWPORT_BOTTOM_CSS_VAR = '--hop-mobile-vb';
+const MOBILE_IME_OPEN_CLASS = 'hop-mobile-ime-open';
+const MOBILE_KEYBOARD_THRESHOLD = 120;
 
 const MOBILE_ACTIONS: MobileAction[] = [
   { id: 'file:new-doc', label: '새 문서', icon: '📄', primary: true },
@@ -143,10 +147,27 @@ function installLongPressSheet(dispatcher: CommandDispatcher, setStatus: (messag
 }
 
 function applyMobileViewportHeight(): void {
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const visualViewport = window.visualViewport;
+  const viewportHeight = visualViewport?.height ?? window.innerHeight;
+  const viewportTop = Math.max(0, visualViewport?.offsetTop ?? 0);
+  const rawViewportBottom = Math.max(
+    0,
+    window.innerHeight - viewportHeight - viewportTop,
+  );
+  const keyboardOpen = rawViewportBottom > MOBILE_KEYBOARD_THRESHOLD;
+  const viewportBottom = keyboardOpen ? 0 : rawViewportBottom;
   const roundedHeight = Math.round(viewportHeight);
   if (roundedHeight <= 0) return;
   document.documentElement.style.setProperty(MOBILE_VIEWPORT_CSS_VAR, `${roundedHeight}px`);
+  document.documentElement.style.setProperty(
+    MOBILE_VIEWPORT_TOP_CSS_VAR,
+    `${Math.round(viewportTop)}px`,
+  );
+  document.documentElement.style.setProperty(
+    MOBILE_VIEWPORT_BOTTOM_CSS_VAR,
+    `${Math.round(viewportBottom)}px`,
+  );
+  document.body.classList.toggle(MOBILE_IME_OPEN_CLASS, keyboardOpen);
 }
 
 function installMobileViewportHeightSync(): void {

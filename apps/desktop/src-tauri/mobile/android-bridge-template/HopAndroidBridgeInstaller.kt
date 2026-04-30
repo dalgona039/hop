@@ -2,9 +2,13 @@ package __HOP_PACKAGE__
 
 import android.app.Activity
 import android.webkit.WebView
+import androidx.core.view.WindowCompat
 
 object HopAndroidBridgeInstaller {
   fun install(activity: Activity) {
+    // Keep app content below Android system bars to avoid toolbar overlap.
+    WindowCompat.setDecorFitsSystemWindows(activity.window, true)
+
     val webView = resolveWebView(activity) ?: return
     webView.addJavascriptInterface(HopAndroidBridge(activity), "__HOP_ANDROID_NATIVE__")
   }
