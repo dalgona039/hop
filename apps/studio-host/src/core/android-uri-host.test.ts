@@ -134,22 +134,33 @@ describe('android uri host', () => {
     expect(isUriWritePermissionError(thrown)).toBe(true);
   });
 
-  it('falls back to fetch PUT when host write bridge is missing', async () => {
+  it('fails fast for content URI writes when native write bridge is missing', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(writeUriBytes('content://example/doc.hwp', Uint8Array.from([9])))
+      .rejects
+      .toThrow('Android 네이티브 URI 쓰기 브리지를 찾을 수 없습니다');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to fetch PUT when host write bridge is missing for non-content URI', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await writeUriBytes('content://example/doc.hwp', Uint8Array.from([9]));
+    await writeUriBytes('https://example/doc.hwp', Uint8Array.from([9]));
 
-    expect(fetchMock).toHaveBeenCalledWith('content://example/doc.hwp', {
+    expect(fetchMock).toHaveBeenCalledWith('https://example/doc.hwp', {
       method: 'PUT',
       body: Uint8Array.from([9]),
     });
   });
 
-  it('treats 403 fetch PUT failures as permission errors', async () => {
+  it('treats 403 fetch PUT failures as permission errors for non-content URI', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
@@ -158,7 +169,7 @@ describe('android uri host', () => {
 
     let thrown: unknown;
     try {
-      await writeUriBytes('content://example/doc.hwp', Uint8Array.from([9]));
+      await writeUriBytes('https://example/doc.hwp', Uint8Array.from([9]));
     } catch (error) {
       thrown = error;
     }

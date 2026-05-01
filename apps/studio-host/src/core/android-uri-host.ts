@@ -324,6 +324,12 @@ export async function writeUriBytes(uri: string, bytes: Uint8Array): Promise<voi
   await persistUriPermission(uri);
 
   const host = resolveAndroidUriHost();
+  const isContentUri = uri.toLowerCase().startsWith('content://');
+  if (isContentUri && (!host || typeof host.writeUriBytes !== 'function')) {
+    throw new Error(
+      'Android 네이티브 URI 쓰기 브리지를 찾을 수 없습니다. 최신 APK로 업데이트 후 다시 시도하세요.',
+    );
+  }
   if (host && typeof host.writeUriBytes === 'function') {
     try {
       await host.writeUriBytes(uri, Array.from(bytes));
