@@ -70,6 +70,8 @@ const desktopCommands = new Map<string, CommandDef>([
       if (result) {
         services.eventBus.emit('desktop-document-saved', result);
         emitStatus(services, '저장 완료');
+      } else {
+        emitStatus(services, '저장이 취소되었습니다.');
       }
     } catch (error) {
       reportCommandError(services, '저장', error);
@@ -129,6 +131,8 @@ const hopOnlyCommands: CommandDef[] = [
         if (result) {
           services.eventBus.emit('desktop-document-saved', result);
           emitStatus(services, '저장 완료');
+        } else {
+          emitStatus(services, '저장이 취소되었습니다.');
         }
       } catch (error) {
         reportCommandError(services, '다른 이름으로 저장', error);

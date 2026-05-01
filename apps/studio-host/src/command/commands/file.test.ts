@@ -107,6 +107,28 @@ describe('file command desktop overrides', () => {
     expect(globalThis.alert).toHaveBeenCalledWith('저장에 실패했습니다:\ndisk full');
   });
 
+  it('updates status when desktop save is canceled', async () => {
+    const eventBus = { emit: vi.fn() };
+    const wasm = desktopBridge({
+      saveDocumentFromCommand: vi.fn().mockResolvedValue(null),
+    });
+
+    await command('file:save').execute(services({ wasm, eventBus }) as never);
+
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-status', '저장이 취소되었습니다.');
+  });
+
+  it('updates status when save-as is canceled', async () => {
+    const eventBus = { emit: vi.fn() };
+    const wasm = desktopBridge({
+      saveDocumentAsFromCommand: vi.fn().mockResolvedValue(null),
+    });
+
+    await command('file:save-as').execute(services({ wasm, eventBus }) as never);
+
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-status', '저장이 취소되었습니다.');
+  });
+
   it('uses desktop print integration when available', async () => {
     const wasm = desktopBridge({
       printCurrentWebview: vi.fn().mockResolvedValue(undefined),

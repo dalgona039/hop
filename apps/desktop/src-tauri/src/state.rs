@@ -269,6 +269,9 @@ impl DocumentSessionManager {
         let path = target_path
             .or_else(|| session.source_path.clone())
             .ok_or_else(|| "새 문서는 저장 경로가 필요합니다".to_string())?;
+        if is_content_uri_path(&path) {
+            return Err("content URI 경로는 save_hwp_bytes로 저장할 수 없습니다".to_string());
+        }
         if !allow_external_overwrite {
             session.check_external_modification_for_path(&path)?;
         }
@@ -796,6 +799,13 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+fn is_content_uri_path(path: &Path) -> bool {
+    path.to_string_lossy()
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("content://")
+}
+
 pub fn parse_json_string(raw: String) -> Result<Value, String> {
     serde_json::from_str(&raw).map_err(|e| format!("JSON 파싱 실패: {}", e))
 }
@@ -990,6 +1000,26 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("HWPX 경로에는 HWP 바이트를 저장할 수 없습니다"));
+    }
+
+    #[test]
+    fn save_hwp_bytes_rejects_content_uri_target_before_parsing_bytes() {
+        let mut manager = DocumentSessionManager::default();
+        let opened = manager.create_document().unwrap();
+        let target =
+            PathBuf::from("content://com.android.providers.downloads.documents/document/tmp-file.hwp");
+
+        let error = manager
+            .save_hwp_bytes(
+                &opened.doc_id,
+                b"not a hwp document",
+                Some(target),
+                Some(opened.revision),
+                false,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("content URI 경로는 save_hwp_bytes로 저장할 수 없습니다"));
     }
 
     #[test]

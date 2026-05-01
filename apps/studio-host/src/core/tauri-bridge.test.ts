@@ -255,6 +255,94 @@ describe('TauriBridge', () => {
     expect(document.title).toBe('report.hwp - HOP');
   });
 
+  it('treats content URI from save-as dialog as external URI target', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'draft.hwp',
+      sourcePath: null,
+      format: 'hwp',
+      pageCount: 1,
+      revision: 2,
+      dirty: true,
+      warnings: [],
+    });
+    saveMock.mockResolvedValue('content://provider/new-doc');
+
+    invokeMock.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'commit_external_hwp_save') {
+        expect(args).toEqual({
+          docId: 'doc-1',
+          bytes: [1, 2, 3],
+          expectedRevision: 2,
+        });
+        return {
+          docId: 'doc-1',
+          sourcePath: null,
+          format: 'hwp',
+          revision: 3,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentAsFromCommand();
+
+    expect(writeUriBytesMock).toHaveBeenCalledWith(
+      'content://provider/new-doc',
+      Uint8Array.from([1, 2, 3]),
+    );
+    expect(result?.revision).toBe(3);
+    expect(document.title).toBe('draft.hwp - HOP');
+  });
+
+  it('reuses content URI source on save without forcing save-as repeatedly', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'existing.hwp',
+      sourcePath: 'content://provider/existing.hwp',
+      format: 'hwp',
+      pageCount: 1,
+      revision: 6,
+      dirty: true,
+      warnings: [],
+    });
+
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'export_hwp_bytes_for_external_save') {
+        return {
+          docId: 'doc-1',
+          revision: 6,
+          fileName: 'existing.hwp',
+          bytes: [9, 8, 7],
+        };
+      }
+      if (command === 'commit_external_hwp_save') {
+        return {
+          docId: 'doc-1',
+          sourcePath: null,
+          format: 'hwp',
+          revision: 7,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentFromCommand();
+
+    expect(writeUriBytesMock).toHaveBeenCalledWith(
+      'content://provider/existing.hwp',
+      Uint8Array.from([9, 8, 7]),
+    );
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(result?.revision).toBe(7);
+  });
+
   it('falls back to writable URI picker when save-as dialog path is unavailable', async () => {
     const bridge = new TauriBridgeCtor();
     applyOpenResult(bridge, {
@@ -299,7 +387,7 @@ describe('TauriBridge', () => {
       Uint8Array.from([1, 2, 3]),
     );
     expect(result?.revision).toBe(5);
-    expect(document.title).toBe('draft.hwp - HOP');
+    expect(document.title).toBe('new-doc.hwp - HOP');
   });
 
   it('returns null when the user cancels an external overwrite warning', async () => {

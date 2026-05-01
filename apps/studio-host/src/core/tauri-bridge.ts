@@ -169,6 +169,10 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
 
   async saveDocumentFromCommand(): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
+    if (!this.externalSourceUri && this.sourcePath && this.isContentUri(this.sourcePath)) {
+      this.externalSourceUri = this.sourcePath;
+      this.sourcePath = null;
+    }
     if (this.externalSourceUri) {
       return this.saveExternalUriHwpBytes(docId, this.externalSourceUri);
     }
@@ -183,23 +187,19 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
 
   async saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
-    const targetPath = await this.selectSavePath(this.suggestedHwpName(), 'HWP 문서', ['hwp']);
+    const suggestedName = this.suggestedHwpName();
+    const targetPath = await this.selectSavePath(suggestedName, 'HWP 문서', ['hwp']);
     if (targetPath) {
-      return this.saveHwpBytes(docId, this.withExtension(targetPath, 'hwp'));
+      const normalized = targetPath.trim();
+      if (this.isContentUri(normalized)) {
+        return this.saveExternalUriFromTarget(normalized, suggestedName);
+      }
+      return this.saveHwpBytes(docId, this.withExtension(normalized, 'hwp'));
     }
 
-    const suggestedName = this.suggestedHwpName();
     const writableUri = await requestWritableUri(suggestedName, 'application/x-hwp');
     if (!writableUri) return null;
-
-    const bytes = Uint8Array.from(this.currentHwpBytes());
-    await this.writeExternalUriBytes(writableUri, bytes);
-    const result = await this.commitExternalHwpSave(bytes, suggestedName);
-    this.externalSourceUri = writableUri;
-    this.sourcePath = null;
-    this.fileName = suggestedName;
-    this.updateDocumentTitle();
-    return result;
+    return this.saveExternalUriFromTarget(writableUri, suggestedName);
   }
 
   async exportHwpBytesForExternalSave(): Promise<ExternalSavePayload> {
@@ -379,6 +379,21 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     return result;
   }
 
+  private async saveExternalUriFromTarget(
+    uri: string,
+    suggestedFileName: string,
+  ): Promise<DesktopSaveResult> {
+    const bytes = Uint8Array.from(this.currentHwpBytes());
+    await this.writeExternalUriBytes(uri, bytes);
+    const fileName = this.fileNameFromTargetUri(uri, suggestedFileName);
+    const result = await this.commitExternalHwpSave(bytes, fileName);
+    this.externalSourceUri = uri;
+    this.sourcePath = null;
+    this.fileName = fileName;
+    this.updateDocumentTitle();
+    return result;
+  }
+
   private async confirmExternalOverwriteIfNeeded(
     docId: string,
     targetPath: string | null,
@@ -471,6 +486,24 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   private withExtension(path: string, extension: string): string {
     const escaped = extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\.${escaped}$`, 'i').test(path) ? path : `${path}.${extension}`;
+  }
+
+  private isContentUri(value: string): boolean {
+    return value.toLowerCase().startsWith('content://');
+  }
+
+  private fileNameFromTargetUri(uri: string, fallback: string): string {
+    const cleanFallback = this.withExtension((fallback || 'document').trim(), 'hwp');
+    const base = uri.split('?')[0].split('#')[0].split('/').pop();
+    if (!base) return cleanFallback;
+    try {
+      const decoded = decodeURIComponent(base).trim();
+      if (/\.hwpx$/i.test(decoded)) return decoded.replace(/\.hwpx$/i, '.hwp');
+      if (/\.hwp$/i.test(decoded)) return decoded;
+    } catch {
+      // ignore decode failure and keep fallback
+    }
+    return cleanFallback;
   }
 
   private currentHwpBytes(): number[] {
