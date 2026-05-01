@@ -17,7 +17,6 @@ type DesktopFileBridge = Pick<
 const upstreamById = new Map(upstreamFileCommands.map((command) => [command.id, command]));
 
 function desktopBridge(wasm: unknown): DesktopFileBridge | null {
-  if (isTauriMobileRuntime()) return null;
   if (!wasm || typeof wasm !== 'object') return null;
   const candidate = wasm as Partial<DesktopFileBridge>;
   return typeof candidate.openDocumentFromDialog === 'function'

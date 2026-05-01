@@ -277,12 +277,11 @@ export class Toolbar {
     this.fontSize.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const pt = parseFloat(this.fontSize.value);
-        if (!isNaN(pt) && pt > 0) {
-          this.eventBus.emit('format-char', { fontSize: Math.round(pt * 100) } as CharProperties);
-        }
+        this.applyFontSizeInputValue();
       }
     });
+    this.fontSize.addEventListener('change', () => this.applyFontSizeInputValue());
+    this.fontSize.addEventListener('blur', () => this.applyFontSizeInputValue());
 
     // 크기 증감 버튼
     this.btnSizeUp.addEventListener('mousedown', (e) => {
@@ -300,6 +299,12 @@ export class Toolbar {
       this.fontSize.value = String(newPt);
       this.eventBus.emit('format-char', { fontSize: Math.round(newPt * 100) } as CharProperties);
     });
+  }
+
+  private applyFontSizeInputValue(): void {
+    const pt = parseFloat(this.fontSize.value);
+    if (Number.isNaN(pt) || pt <= 0) return;
+    this.eventBus.emit('format-char', { fontSize: Math.round(pt * 100) } as CharProperties);
   }
 
   /** 글자색 피커 이벤트 */

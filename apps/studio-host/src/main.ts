@@ -1,6 +1,6 @@
 import { createBridge, isTauriMobileRuntime, isTauriRuntime } from '@/core/bridge-factory';
 import { installAndroidNativeHostBridge } from '@/core/android-native-bootstrap';
-import type { DocumentInfo } from '@/core/types';
+import type { CharProperties, DocumentInfo, DocumentPosition } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { createDesktopDocument, setupDesktopEvents } from '@/core/desktop-events';
 import { setupMobileDraftAutosave } from '@/core/mobile-autosave';
@@ -103,6 +103,106 @@ const sbPage = () => document.getElementById('sb-page')!;
 const sbSection = () => document.getElementById('sb-section')!;
 const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
 
+type PendingCharFormatHandler = Pick<
+  InputHandler,
+  'hasSelection' | 'getCursorPosition' | 'applyCharPropsToRange'
+> & {
+  textarea?: HTMLTextAreaElement;
+};
+
+function installCollapsedCaretCharFormatBridge(
+  bus: EventBus,
+  handler: InputHandler,
+): void {
+  const input = handler as unknown as PendingCharFormatHandler;
+  const textarea = input.textarea;
+  if (!textarea) return;
+
+  let pendingProps: Partial<CharProperties> | null = null;
+  let beforeInputPos: DocumentPosition | null = null;
+  let applying = false;
+
+  bus.on('format-char', (payload) => {
+    if (applying || handler.hasSelection()) {
+      pendingProps = null;
+      return;
+    }
+    const nextProps = normalizeCharFormatPayload(payload);
+    if (!nextProps) return;
+    pendingProps = {
+      ...(pendingProps ?? {}),
+      ...nextProps,
+    };
+  });
+
+  textarea.addEventListener('beforeinput', (event) => {
+    if (!pendingProps || handler.hasSelection()) return;
+    const inputEvent = event as InputEvent;
+    if (!isInsertInputType(inputEvent.inputType)) return;
+    beforeInputPos = cloneDocumentPosition(handler.getCursorPosition());
+  });
+
+  textarea.addEventListener('input', (event) => {
+    if (!pendingProps || !beforeInputPos) return;
+    const inputEvent = event as InputEvent;
+    if (!isInsertInputType(inputEvent.inputType)) {
+      beforeInputPos = null;
+      return;
+    }
+    const afterInputPos = cloneDocumentPosition(handler.getCursorPosition());
+    const range = resolveInsertedRange(beforeInputPos, afterInputPos);
+    beforeInputPos = null;
+    if (!range) return;
+
+    const props = pendingProps;
+    pendingProps = null;
+    applying = true;
+    try {
+      handler.applyCharPropsToRange(range.start, range.end, props);
+    } finally {
+      applying = false;
+    }
+  });
+}
+
+function normalizeCharFormatPayload(payload: unknown): Partial<CharProperties> | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const entries = Object.entries(payload).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) return null;
+  return Object.fromEntries(entries) as Partial<CharProperties>;
+}
+
+function isInsertInputType(inputType?: string | null): boolean {
+  return !inputType || inputType.startsWith('insert');
+}
+
+function resolveInsertedRange(
+  start: DocumentPosition,
+  end: DocumentPosition,
+): { start: DocumentPosition; end: DocumentPosition } | null {
+  if (!sameTextFlowContext(start, end)) return null;
+  if (end.paragraphIndex < start.paragraphIndex) return null;
+  if (end.paragraphIndex === start.paragraphIndex && end.charOffset <= start.charOffset) return null;
+  return { start, end };
+}
+
+function sameTextFlowContext(a: DocumentPosition, b: DocumentPosition): boolean {
+  return a.sectionIndex === b.sectionIndex
+    && a.parentParaIndex === b.parentParaIndex
+    && a.controlIndex === b.controlIndex
+    && a.cellIndex === b.cellIndex
+    && a.isTextBox === b.isTextBox
+    && JSON.stringify(a.cellPath ?? null) === JSON.stringify(b.cellPath ?? null);
+}
+
+function cloneDocumentPosition(position: DocumentPosition): DocumentPosition {
+  return {
+    ...position,
+    cellPath: position.cellPath?.map((entry) => ({ ...entry })),
+    cursorRect: position.cursorRect ? { ...position.cursorRect } : undefined,
+  };
+}
+
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -131,6 +231,7 @@ async function initialize(): Promise<void> {
       canvasView.getVirtualScroll(),
       canvasView.getViewportManager(),
     );
+    installCollapsedCaretCharFormatBridge(eventBus, inputHandler);
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
     toolbar.setEnabled(false);

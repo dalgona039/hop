@@ -255,6 +255,53 @@ describe('TauriBridge', () => {
     expect(document.title).toBe('report.hwp - HOP');
   });
 
+  it('falls back to writable URI picker when save-as dialog path is unavailable', async () => {
+    const bridge = new TauriBridgeCtor();
+    applyOpenResult(bridge, {
+      docId: 'doc-1',
+      fileName: 'draft.hwp',
+      sourcePath: null,
+      format: 'hwp',
+      pageCount: 1,
+      revision: 4,
+      dirty: true,
+      warnings: [],
+    });
+    saveMock.mockResolvedValue(null);
+    requestWritableUriMock.mockResolvedValue('content://provider/new-doc.hwp');
+    writeUriBytesMock.mockResolvedValue(undefined);
+
+    invokeMock.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'commit_external_hwp_save') {
+        expect(args).toEqual({
+          docId: 'doc-1',
+          bytes: [1, 2, 3],
+          expectedRevision: 4,
+        });
+        return {
+          docId: 'doc-1',
+          sourcePath: null,
+          format: 'hwp',
+          revision: 5,
+          dirty: false,
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const result = await bridge.saveDocumentAsFromCommand();
+
+    expect(saveMock).toHaveBeenCalled();
+    expect(requestWritableUriMock).toHaveBeenCalledWith('draft.hwp', 'application/x-hwp');
+    expect(writeUriBytesMock).toHaveBeenCalledWith(
+      'content://provider/new-doc.hwp',
+      Uint8Array.from([1, 2, 3]),
+    );
+    expect(result?.revision).toBe(5);
+    expect(document.title).toBe('draft.hwp - HOP');
+  });
+
   it('returns null when the user cancels an external overwrite warning', async () => {
     const bridge = new TauriBridgeCtor();
     applyOpenResult(bridge, {

@@ -53,6 +53,27 @@ describe('file command desktop overrides', () => {
     expect(upstreamSave).toHaveBeenCalled();
   });
 
+  it('uses desktop save bridge on mobile runtime when bridge methods are available', async () => {
+    isTauriMobileRuntimeMock.mockReturnValue(true);
+    const eventBus = { emit: vi.fn() };
+    const wasm = desktopBridge({
+      saveDocumentFromCommand: vi.fn().mockResolvedValue({
+        docId: 'doc-mobile',
+        sourcePath: null,
+        format: 'hwp',
+        revision: 1,
+        dirty: false,
+        warnings: [],
+      }),
+    });
+
+    await command('file:save').execute(services({ wasm, eventBus }) as never);
+
+    expect(upstreamSave).not.toHaveBeenCalled();
+    expect(wasm.saveDocumentFromCommand).toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-status', '저장 완료');
+  });
+
   it('emits saved events and status when desktop save succeeds', async () => {
     const result = {
       docId: 'doc-1',
