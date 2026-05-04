@@ -18,9 +18,19 @@ apps/studio-host/dist/
 .vscode/
 .idea/
 
+# Local tooling artifacts
+*.log
+*.orig
+*.rej
+.copilot/
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Signing keys (never commit)
+*.jks
+*.keystore
 
 /assets/fonts/hamchob-r.woff2
 /assets/fonts/hamchod-r.woff2
