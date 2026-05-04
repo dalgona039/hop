@@ -203,6 +203,13 @@ function cloneDocumentPosition(position: DocumentPosition): DocumentPosition {
   };
 }
 
+function applyMobileImeOverlayStyle(container: HTMLElement): void {
+  const overlay = container.querySelector<HTMLElement>('.caret-composition');
+  if (!overlay) return;
+  overlay.style.background = 'transparent';
+  overlay.style.color = '#111';
+}
+
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -234,6 +241,9 @@ async function initialize(): Promise<void> {
       canvasView.getVirtualScroll(),
       canvasView.getViewportManager(),
     );
+    if (isTauriMobileRuntime()) {
+      applyMobileImeOverlayStyle(container);
+    }
     installCollapsedCaretCharFormatBridge(eventBus, inputHandler);
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
