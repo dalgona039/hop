@@ -47,7 +47,7 @@ function ensureImport(source, importLine) {
 }
 
 function patchMainActivity(source) {
-  if (source.includes('HopAndroidBridgeInstaller.install(this)')) {
+  if (source.includes('HopAndroidBridgeInstaller.install(this, hopAndroidBridge)')) {
     return source;
   }
 
@@ -61,8 +61,9 @@ function patchMainActivity(source) {
       [
         'class MainActivity : TauriActivity() {',
         '  override fun onCreate(savedInstanceState: Bundle?) {',
+        '    val hopAndroidBridge = HopAndroidBridge(this)',
         '    super.onCreate(savedInstanceState)',
-        '    HopAndroidBridgeInstaller.install(this)',
+        '    HopAndroidBridgeInstaller.install(this, hopAndroidBridge)',
         '  }',
         '}',
       ].join('\n'),
@@ -73,13 +74,33 @@ function patchMainActivity(source) {
     return patched.replace(
       /override\s+fun\s+onCreate\s*\(savedInstanceState:\s*Bundle\?\)\s*\{([\s\S]*?)\n\s*\}/m,
       (match, body) => {
-        if (body.includes('HopAndroidBridgeInstaller.install(this)')) {
+        if (body.includes('HopAndroidBridgeInstaller.install(this, hopAndroidBridge)')) {
           return match;
+        }
+
+        let nextBody = body;
+        if (!nextBody.includes('val hopAndroidBridge = HopAndroidBridge(this)')) {
+          if (nextBody.includes('super.onCreate(savedInstanceState)')) {
+            nextBody = nextBody.replace(
+              'super.onCreate(savedInstanceState)',
+              'val hopAndroidBridge = HopAndroidBridge(this)\n    super.onCreate(savedInstanceState)',
+            );
+          } else {
+            nextBody = `\n    val hopAndroidBridge = HopAndroidBridge(this)${nextBody}`;
+          }
+        }
+        if (nextBody.includes('HopAndroidBridgeInstaller.install(this)')) {
+          nextBody = nextBody.replace(
+            'HopAndroidBridgeInstaller.install(this)',
+            'HopAndroidBridgeInstaller.install(this, hopAndroidBridge)',
+          );
+        } else {
+          nextBody = `${nextBody}\n    HopAndroidBridgeInstaller.install(this, hopAndroidBridge)`;
         }
 
         return match.replace(
           body,
-          `${body}\n    HopAndroidBridgeInstaller.install(this)`,
+          nextBody,
         );
       },
     );
@@ -95,8 +116,9 @@ function patchMainActivity(source) {
           body.trimEnd(),
           '',
           '  override fun onCreate(savedInstanceState: Bundle?) {',
+          '    val hopAndroidBridge = HopAndroidBridge(this)',
           '    super.onCreate(savedInstanceState)',
-          '    HopAndroidBridgeInstaller.install(this)',
+          '    HopAndroidBridgeInstaller.install(this, hopAndroidBridge)',
           '  }',
           '}',
         ].join('\n');
@@ -104,7 +126,7 @@ function patchMainActivity(source) {
     );
   }
 
-  fail('MainActivity.kt 패치 형식을 찾을 수 없습니다. 수동으로 onCreate에 HopAndroidBridgeInstaller.install(this)를 추가하세요.');
+  fail('MainActivity.kt 패치 형식을 찾을 수 없습니다. 수동으로 onCreate에 HopAndroidBridgeInstaller.install(this, hopAndroidBridge)를 추가하세요.');
 }
 
 function renderTemplate(templatePath, packageName) {

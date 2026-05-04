@@ -11,23 +11,23 @@ object HopAndroidBridgeInstaller {
   private const val BRIDGE_INSTALL_MAX_RETRIES = 40
   private val installedWebViews = Collections.newSetFromMap(WeakHashMap<WebView, Boolean>())
 
-  fun install(activity: Activity) {
+  fun install(activity: Activity, bridge: HopAndroidBridge) {
     // Keep app content below Android system bars to avoid toolbar overlap.
     WindowCompat.setDecorFitsSystemWindows(activity.window, true)
-    installBridgeWithRetry(activity, BRIDGE_INSTALL_MAX_RETRIES)
+    installBridgeWithRetry(activity, bridge, BRIDGE_INSTALL_MAX_RETRIES)
   }
 
-  private fun installBridgeWithRetry(activity: Activity, retriesLeft: Int) {
+  private fun installBridgeWithRetry(activity: Activity, bridge: HopAndroidBridge, retriesLeft: Int) {
     val webView = resolveWebView(activity)
     if (webView != null) {
       if (markInstalled(webView)) {
-        webView.addJavascriptInterface(HopAndroidBridge(activity), "__HOP_ANDROID_NATIVE__")
+        webView.addJavascriptInterface(bridge, "__HOP_ANDROID_NATIVE__")
       }
       return
     }
     if (retriesLeft <= 0) return
     activity.window.decorView.postDelayed(
-      { installBridgeWithRetry(activity, retriesLeft - 1) },
+      { installBridgeWithRetry(activity, bridge, retriesLeft - 1) },
       BRIDGE_INSTALL_RETRY_DELAY_MS,
     )
   }
