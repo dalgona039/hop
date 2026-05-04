@@ -207,9 +207,12 @@ async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
     msg.textContent = '웹폰트 로딩 중...';
-    await loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    const webFontLoad = loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
     msg.textContent = '문서 엔진 로딩 중...';
     await wasm.initialize();
+    void webFontLoad.catch((error) => {
+      console.warn('[main] 웹폰트 초기 로딩 실패:', error);
+    });
     msg.textContent = 'HWP 파일을 선택해주세요.';
 
     const container = document.getElementById('scroll-container')!;
