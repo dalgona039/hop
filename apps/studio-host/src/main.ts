@@ -206,7 +206,7 @@ function cloneDocumentPosition(position: DocumentPosition): DocumentPosition {
 function applyMobileImeOverlayStyle(container: HTMLElement): void {
   const overlay = container.querySelector<HTMLElement>('.caret-composition');
   if (!overlay) return;
-  overlay.style.background = 'transparent';
+  overlay.style.background = '#fff';
   overlay.style.color = '#111';
 }
 
