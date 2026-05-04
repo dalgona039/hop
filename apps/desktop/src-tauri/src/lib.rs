@@ -7,7 +7,9 @@ mod state;
 mod updates;
 mod windows;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri::{AppHandle, Emitter, Manager};
 
 use commands::{
@@ -23,7 +25,7 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .enable_macos_default_menu(false)
         .manage(AppState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
@@ -31,34 +33,32 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build());
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    {
-        builder = builder
-            .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_window_state::Builder::default().build())
-            .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-                let paths = document_paths_from_args(&args, &cwd);
-                queue_open_paths(app, paths);
-                let payload = serde_json::json!({ "args": args, "cwd": cwd });
-                let _ = app.emit("hop-second-instance", payload);
-            }));
-    }
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let paths = document_paths_from_args(&args, &cwd);
+            queue_open_paths(app, paths);
+            let payload = serde_json::json!({ "args": args, "cwd": cwd });
+            let _ = app.emit("hop-second-instance", payload);
+        }));
 
     let app = builder
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(target_os = "macos")]
-            menu::install(app)?;
+            menu::install(_app)?;
 
             #[cfg(any(target_os = "windows", target_os = "linux"))]
-            app.set_menu(tauri::menu::Menu::new(app)?)?;
+            _app.set_menu(tauri::menu::Menu::new(_app)?)?;
 
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = _app.get_webview_window("main") {
                 windows::install_editor_window_minimum(&window);
-                windows::attach_document_drop_handler(app.handle(), &window);
+                windows::attach_document_drop_handler(_app.handle(), &window);
             }
 
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            updates::install_startup_update_check(app.handle());
+            updates::install_startup_update_check(_app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -88,19 +88,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build HOP desktop app");
 
-    app.run(|app, event| {
+    app.run(|_app, _event| {
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Opened { urls } = event {
+        if let tauri::RunEvent::Opened { urls } = _event {
             let paths = urls
                 .into_iter()
                 .filter_map(|url| url.to_file_path().ok())
                 .filter_map(document_target_from_path)
                 .collect();
-            queue_open_paths(app, paths);
+            queue_open_paths(_app, paths);
         }
     });
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn queue_open_paths(app: &AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
@@ -118,12 +119,14 @@ fn queue_open_paths(app: &AppHandle, paths: Vec<String>) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn document_paths_from_args(args: &[String], cwd: &str) -> Vec<String> {
     args.iter()
         .filter_map(|arg| document_target_from_arg(arg, cwd))
         .collect()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn document_target_from_arg(arg: &str, cwd: &str) -> Option<String> {
     if let Ok(url) = tauri::Url::parse(arg) {
         if url.scheme() == "content" {
@@ -143,6 +146,7 @@ fn document_target_from_arg(arg: &str, cwd: &str) -> Option<String> {
     document_target_from_path(resolved)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn document_target_from_content_uri(url: &tauri::Url) -> Option<String> {
     if !is_supported_document_target(url.path()) {
         return None;
@@ -150,6 +154,7 @@ fn document_target_from_content_uri(url: &tauri::Url) -> Option<String> {
     Some(url.to_string())
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn document_target_from_path(path: PathBuf) -> Option<String> {
     let path_str = path.to_string_lossy().to_string();
     if !is_supported_document_target(&path_str) {
@@ -158,6 +163,7 @@ fn document_target_from_path(path: PathBuf) -> Option<String> {
     Some(path_str)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn is_supported_document_target(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     let normalized = lower.split('?').next().unwrap_or(&lower);

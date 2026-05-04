@@ -1,10 +1,13 @@
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri::{AppHandle, Manager};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri::{
     DragDropEvent, Emitter, LogicalSize, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     WindowEvent,
 };
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use uuid::Uuid;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -113,6 +116,7 @@ pub fn attach_document_drop_handler(app: &AppHandle, window: &WebviewWindow) {
     });
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn document_paths(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
@@ -126,6 +130,7 @@ fn document_paths(paths: &[PathBuf]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn target_window_label(app: &AppHandle) -> Option<String> {
     let windows = app.webview_windows();
     windows

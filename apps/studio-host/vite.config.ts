@@ -63,6 +63,9 @@ function decodePath(path: string): string {
 export default defineConfig({
   base: './',
   plugins: [hopFontAssets()],
+  build: {
+    chunkSizeWarningLimit: 800,
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
