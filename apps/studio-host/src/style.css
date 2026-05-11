@@ -20,7 +20,6 @@
 @import '@/styles/bookmark-dialog.css';
 @import '@/styles/shape-picker.css';
 @import '@/styles/command-palette.css';
-@import '@/styles/about-dialog.css';
 @import '@/styles/custom-select.css';
-@import '@/styles/update-notice.css';
 @import '@/styles/responsive.css';
+@import './styles/mobile-shell.css';

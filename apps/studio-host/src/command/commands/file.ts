@@ -1,6 +1,7 @@
 import { fileCommands as upstreamFileCommands } from '@upstream/command/commands/file';
 import type { CommandDef, CommandServices } from '@/command/types';
 import type { DesktopBridgeApi } from '@/core/tauri-bridge';
+import { isTauriMobileRuntime } from '@/core/bridge-factory';
 import { openPrintDialog } from '@/ui/print-dialog';
 
 type DesktopFileBridge = Pick<
@@ -69,6 +70,8 @@ const desktopCommands = new Map<string, CommandDef>([
       if (result) {
         services.eventBus.emit('desktop-document-saved', result);
         emitStatus(services, '저장 완료');
+      } else {
+        emitStatus(services, '저장이 취소되었습니다.');
       }
     } catch (error) {
       reportCommandError(services, '저장', error);
@@ -104,6 +107,10 @@ const hopOnlyCommands: CommandDef[] = [
     async execute(services) {
       const desktop = desktopBridge(services.wasm);
       if (!desktop) {
+        if (isTauriMobileRuntime()) {
+          emitStatus(services, '모바일에서는 새 창을 지원하지 않습니다.');
+          return;
+        }
         window.open(window.location.href, '_blank');
         return;
       }
@@ -124,6 +131,8 @@ const hopOnlyCommands: CommandDef[] = [
         if (result) {
           services.eventBus.emit('desktop-document-saved', result);
           emitStatus(services, '저장 완료');
+        } else {
+          emitStatus(services, '저장이 취소되었습니다.');
         }
       } catch (error) {
         reportCommandError(services, '다른 이름으로 저장', error);

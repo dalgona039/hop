@@ -1,6 +1,3 @@
-import { detectLocalFontEntries, ensureLocalFontsAvailable } from './local-fonts';
-import { filterAuthoringFontFamilies, isAuthoringBlockedFontFamily } from './font-authoring-policy';
-
 interface FontEntry {
   name: string;
   file: string;
@@ -73,7 +70,7 @@ const FONT_LIST: FontEntry[] = [
   { name: '고운돋움', file: '/fonts/GowunDodum-Regular.woff2' },
 ];
 
-export const REGISTERED_FONTS = new Set(filterAuthoringFontFamilies(FONT_LIST.map((font) => font.name)));
+export const REGISTERED_FONTS = new Set(FONT_LIST.map((font) => font.name));
 
 const CRITICAL_FONTS = new Set(['함초롬바탕', '함초롬돋움']);
 const OS_FONT_CANDIDATES = [
@@ -86,7 +83,6 @@ const OS_FONT_CANDIDATES = [
 let fontFaceRegistered = false;
 const loadedFiles = new Set<string>();
 const detectedOSFonts = new Set<string>();
-let substituteFontStyle: HTMLStyleElement | null = null;
 
 export function getDetectedOSFonts(): ReadonlySet<string> {
   return detectedOSFonts;
@@ -96,16 +92,13 @@ export async function loadWebFonts(
   docFonts?: string[],
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<void> {
-  const targetSet = new Set([...(docFonts ?? []), ...CRITICAL_FONTS]);
-  await hydrateDetectedFonts(targetSet);
-
   if (!fontFaceRegistered) {
+    detectOSFonts();
     registerFontFaces();
     fontFaceRegistered = true;
-  } else {
-    syncRegisteredFontFaces();
   }
 
+  const targetSet = new Set([...(docFonts ?? []), ...CRITICAL_FONTS]);
   const targetFonts = FONT_LIST.filter((font) => {
     if (!targetSet.has(font.name)) return false;
     return !detectedOSFonts.has(font.name);
@@ -133,27 +126,6 @@ export async function loadWebFonts(
   }
 }
 
-async function hydrateDetectedFonts(targetFonts: Set<string>): Promise<void> {
-  const localFontEntries = await detectLocalFontEntries().catch(() => []);
-  for (const entry of localFontEntries) {
-    if (entry.sourceKind !== 'system-installed') continue;
-    if (isAuthoringBlockedFontFamily(entry.family)) continue;
-    detectedOSFonts.add(entry.family);
-  }
-
-  const availableFonts = await ensureLocalFontsAvailable(
-    Array.from(targetFonts).filter((family) => !isAuthoringBlockedFontFamily(family)),
-  ).catch(() => new Set<string>());
-  for (const family of availableFonts) {
-    if (isAuthoringBlockedFontFamily(family)) continue;
-    detectedOSFonts.add(family);
-  }
-
-  if (detectedOSFonts.size === 0) {
-    detectFallbackBrowserFonts();
-  }
-}
-
 function mapFontAliases(fontsToLoad: FontEntry[]): Map<string, string[]> {
   const aliases = new Map<string, string[]>();
   const filesToLoad = new Set(fontsToLoad.map((font) => font.file));
@@ -166,7 +138,7 @@ function mapFontAliases(fontsToLoad: FontEntry[]): Map<string, string[]> {
   return aliases;
 }
 
-function detectFallbackBrowserFonts(): void {
+function detectOSFonts(): void {
   for (const name of OS_FONT_CANDIDATES) {
     try {
       if (document.fonts.check(`16px "${name}"`)) {
@@ -179,18 +151,11 @@ function detectFallbackBrowserFonts(): void {
 }
 
 function registerFontFaces(): void {
-  substituteFontStyle = document.createElement('style');
-  document.head.appendChild(substituteFontStyle);
-  syncRegisteredFontFaces();
-}
-
-function syncRegisteredFontFaces(): void {
-  if (!substituteFontStyle) return;
-
-  substituteFontStyle.textContent = FONT_LIST
-    .filter((font) => !detectedOSFonts.has(font.name))
+  const style = document.createElement('style');
+  style.textContent = FONT_LIST
     .map((font) => `@font-face { font-family: "${font.name}"; src: url("${font.file}") format("${font.format ?? 'woff2'}"); font-display: swap; }`)
     .join('\n');
+  document.head.appendChild(style);
 }
 
 function uniqueFonts(fonts: FontEntry[]): FontEntry[] {

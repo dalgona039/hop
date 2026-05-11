@@ -3,18 +3,19 @@ import { createRequire } from 'node:module';
 import { basename, dirname, relative, resolve } from 'node:path';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import type { Plugin } from 'vite';
-import { createHopOverrides } from './hop-overrides';
 
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
-const desktopConfig = JSON.parse(
-  readFileSync(resolve(__dirname, '../desktop/src-tauri/tauri.conf.json'), 'utf-8'),
-);
 const upstreamSrc = resolve(__dirname, '../../third_party/rhwp/rhwp-studio/src');
 const hopSrc = resolve(__dirname, 'src');
 const rhwpCore = normalizePath(require.resolve('@rhwp/core/rhwp.js'));
 const rhwpCoreDir = dirname(rhwpCore);
 const fontAssetsDir = resolve(__dirname, '../../assets/fonts');
+
+const hopOverride = (id: string) => ({
+  find: `@/${id}`,
+  replacement: resolve(hopSrc, id),
+});
 
 function hopFontAssets(): Plugin {
   return {
@@ -62,13 +63,30 @@ function decodePath(path: string): string {
 export default defineConfig({
   base: './',
   plugins: [hopFontAssets()],
+  build: {
+    chunkSizeWarningLimit: 800,
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
-    __HOP_VERSION__: JSON.stringify(desktopConfig.version),
   },
   resolve: {
     alias: [
-      ...createHopOverrides(hopSrc),
+      hopOverride('core/font-loader'),
+      hopOverride('core/bridge-factory'),
+      hopOverride('core/android-native-bootstrap'),
+      hopOverride('core/desktop-events'),
+      hopOverride('core/mobile-autosave'),
+      hopOverride('core/mobile-events'),
+      hopOverride('core/tauri-bridge'),
+      hopOverride('command/shortcut-map'),
+      hopOverride('command/commands/file'),
+      hopOverride('ui/custom-select'),
+      hopOverride('ui/dialog'),
+      hopOverride('ui/mobile-shell'),
+      hopOverride('ui/print-dialog'),
+      hopOverride('ui/toolbar'),
+      hopOverride('styles/custom-select.css'),
+      hopOverride('styles/font-set-dialog.css'),
       { find: '@wasm/rhwp.js', replacement: rhwpCore },
       { find: '@upstream', replacement: upstreamSrc },
       { find: '@', replacement: upstreamSrc },

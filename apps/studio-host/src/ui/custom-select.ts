@@ -119,7 +119,7 @@ function enhanceCustomSelect(select: HTMLSelectElement): void {
     });
   };
 
-  trigger.addEventListener('mousedown', (event) => {
+  trigger.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     event.stopPropagation();
     toggle();
@@ -155,7 +155,7 @@ function enhanceCustomSelect(select: HTMLSelectElement): void {
     }
   });
 
-  document.addEventListener('mousedown', (event) => {
+  document.addEventListener('pointerdown', (event) => {
     if (!root.contains(event.target as Node)) close();
   });
 
@@ -179,7 +179,7 @@ function createOptionRow(option: HTMLOptionElement, commit: (option: HTMLOptionE
   row.textContent = option.textContent ?? '';
   row.disabled = option.disabled;
   row.setAttribute('role', 'option');
-  row.addEventListener('mousedown', (event) => {
+  row.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     event.stopPropagation();
     commit(option);

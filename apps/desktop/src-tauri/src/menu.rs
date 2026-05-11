@@ -1,11 +1,7 @@
-use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
 use tauri::{App, Emitter};
 
 pub fn install(app: &mut App) -> tauri::Result<()> {
-    let app_about = MenuItemBuilder::with_id("file:about", "About HOP").build(app)?;
-    let app_quit = MenuItemBuilder::with_id("app:quit", "Quit HOP")
-        .accelerator("CmdOrCtrl+Q")
-        .build(app)?;
     let new_doc = MenuItemBuilder::with_id("file:new-doc", "New")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
@@ -27,6 +23,7 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let print = MenuItemBuilder::with_id("file:print", "Print...")
         .accelerator("CmdOrCtrl+P")
         .build(app)?;
+    let about_help = MenuItemBuilder::with_id("file:about", "About HOP").build(app)?;
 
     let undo = MenuItemBuilder::with_id("edit:undo", "Undo")
         .accelerator("CmdOrCtrl+Z")
@@ -40,17 +37,12 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let copy = MenuItemBuilder::with_id("edit:copy", "Copy")
         .accelerator("CmdOrCtrl+C")
         .build(app)?;
-    let paste = PredefinedMenuItem::paste(app, Some("Paste"))?;
+    let paste = MenuItemBuilder::with_id("edit:paste", "Paste")
+        .accelerator("CmdOrCtrl+V")
+        .build(app)?;
     let find = MenuItemBuilder::with_id("edit:find", "Find")
         .accelerator("CmdOrCtrl+F")
         .build(app)?;
-    let table_select_cells = MenuItemBuilder::with_id("table:cell-selection-enter", "Select Cells")
-        .accelerator("CmdOrCtrl+Alt+T")
-        .build(app)?;
-    let table_merge_cells =
-        MenuItemBuilder::with_id("table:cell-merge", "Merge Cells").build(app)?;
-    let table_split_cells =
-        MenuItemBuilder::with_id("table:cell-split", "Split Cells").build(app)?;
 
     let zoom_in = MenuItemBuilder::with_id("view:zoom-in", "Zoom In")
         .accelerator("CmdOrCtrl+=")
@@ -62,17 +54,6 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let fit_page = MenuItemBuilder::with_id("view:zoom-fit-page", "Fit Page").build(app)?;
     let fit_width = MenuItemBuilder::with_id("view:zoom-fit-width", "Fit Width").build(app)?;
 
-    let app_menu = SubmenuBuilder::new(app, "HOP")
-        .item(&app_about)
-        .separator()
-        .services()
-        .separator()
-        .hide()
-        .hide_others()
-        .show_all()
-        .separator()
-        .item(&app_quit)
-        .build()?;
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&new_doc)
         .item(&new_window)
@@ -94,12 +75,6 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
         .separator()
         .item(&find)
         .build()?;
-    let table_menu = SubmenuBuilder::new(app, "Table")
-        .item(&table_select_cells)
-        .separator()
-        .item(&table_merge_cells)
-        .item(&table_split_cells)
-        .build()?;
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&zoom_in)
         .item(&zoom_out)
@@ -112,27 +87,15 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
         .minimize()
         .close_window()
         .build()?;
+    let help_menu = SubmenuBuilder::new(app, "Help").item(&about_help).build()?;
 
     let menu = Menu::with_items(
         app,
-        &[
-            &app_menu,
-            &file_menu,
-            &edit_menu,
-            &table_menu,
-            &view_menu,
-            &window_menu,
-        ],
+        &[&file_menu, &edit_menu, &view_menu, &window_menu, &help_menu],
     )?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         let id = event.id().0.as_str();
-        if id == "app:quit" {
-            if let Err(error) = crate::app_quit::request_app_quit(app) {
-                eprintln!("[menu] 앱 종료 요청 실패: {}", error);
-            }
-            return;
-        }
         if id == "file:new-window" {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {

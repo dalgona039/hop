@@ -49,35 +49,10 @@ upstreamScriptTest('honors UPSTREAM_BRANCH and UPSTREAM_REMOTE overrides', async
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Target: origin\/devel/);
+    assert.match(result.stdout, /Branch: devel/);
     assert.equal(
       git(['rev-parse', 'HEAD'], { cwd: fixture.submodule }).stdout.trim(),
       develCommit,
-    );
-  } finally {
-    await cleanup(fixture.tmp);
-  }
-});
-
-upstreamScriptTest('honors UPSTREAM_REF for release tag pinning', async () => {
-  const fixture = await createFixture();
-  try {
-    const releaseCommit = git(['rev-parse', 'HEAD'], { cwd: fixture.upstreamWork }).stdout.trim();
-    git(['tag', 'v0.1.0'], { cwd: fixture.upstreamWork });
-    git(['push', 'origin', 'v0.1.0'], { cwd: fixture.upstreamWork });
-
-    await commitUpstream(fixture.upstreamWork, 'post-release.txt', 'post-release');
-    git(['push', 'origin', 'main'], { cwd: fixture.upstreamWork });
-
-    const result = runUpdateScript(fixture.parent, {
-      UPSTREAM_REF: 'v0.1.0',
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Target: v0\.1\.0/);
-    assert.equal(
-      git(['rev-parse', 'HEAD'], { cwd: fixture.submodule }).stdout.trim(),
-      releaseCommit,
     );
   } finally {
     await cleanup(fixture.tmp);

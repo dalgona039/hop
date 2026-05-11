@@ -1,8 +1,8 @@
-use crate::pending_open::PendingOpenPaths;
 use rhwp::DocumentCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -57,12 +57,11 @@ pub struct ExternalModificationStatus {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileFingerprint {
     len: u64,
-    modified_millis: u64,
-    content_hash: u32,
+    modified_nanos: u128,
+    content_hash: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,8 +92,7 @@ pub struct DocumentSession {
     pub source_fingerprint: Option<FileFingerprint>,
     pub dirty: bool,
     pub revision: u64,
-    pub page_count: u32,
-    pub core: Option<DocumentCore>,
+    pub core: DocumentCore,
     pub page_svg_cache: HashMap<u32, (u64, String)>,
 }
 
@@ -107,9 +105,7 @@ pub struct DocumentSessionManager {
 #[derive(Default)]
 pub struct AppState {
     pub sessions: Mutex<DocumentSessionManager>,
-    pub(crate) pending_open_paths: PendingOpenPaths,
-    pub quit_requests: Mutex<crate::app_quit::AppQuitState>,
-    pub updater: Mutex<crate::updates::UpdateManagerState>,
+    pub pending_open_paths: Mutex<Vec<String>>,
 }
 
 impl DocumentSessionManager {
@@ -125,8 +121,7 @@ impl DocumentSessionManager {
             source_fingerprint: None,
             dirty: false,
             revision: 1,
-            page_count: core.page_count(),
-            core: Some(core),
+            core,
             page_svg_cache: HashMap::new(),
         };
         let result = session.open_result("새 문서.hwp".to_string());
@@ -135,12 +130,24 @@ impl DocumentSessionManager {
         Ok(result)
     }
 
-    pub fn open_document_tracking(
+    pub fn open_document(&mut self, path: PathBuf) -> Result<DocumentOpenResult, String> {
+        DocumentFormat::from_path(&path)?;
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("파일을 읽을 수 없습니다: {} ({})", path.display(), e))?;
+        self.open_document_from_bytes(path, &bytes)
+    }
+
+    pub fn open_document_from_bytes(
         &mut self,
         path: PathBuf,
-        source_fingerprint: Option<FileFingerprint>,
+        bytes: &[u8],
     ) -> Result<DocumentOpenResult, String> {
         let format = DocumentFormat::from_path(&path)?;
+
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("문서 파싱 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("편집 가능 문서 변환 실패: {}", e))?;
 
         let doc_id = Uuid::new_v4().to_string();
         let file_name = path
@@ -150,16 +157,53 @@ impl DocumentSessionManager {
             .to_string();
         let session = DocumentSession {
             doc_id: doc_id.clone(),
-            source_fingerprint: source_fingerprint.or_else(|| file_fingerprint(&path).ok()),
+            source_fingerprint: file_fingerprint_from_bytes(&path, bytes).ok(),
             source_path: Some(path),
             source_format: format,
             dirty: false,
             revision: 1,
-            page_count: 0,
-            core: None,
+            core,
             page_svg_cache: HashMap::new(),
         };
         let result = session.open_result(file_name);
+        self.sessions.insert(doc_id.clone(), session);
+        self.active_doc_id = Some(doc_id);
+        Ok(result)
+    }
+
+    pub fn open_document_from_payload(
+        &mut self,
+        file_name: String,
+        format: DocumentFormat,
+        bytes: &[u8],
+    ) -> Result<DocumentOpenResult, String> {
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("문서 파싱 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("편집 가능 문서 변환 실패: {}", e))?;
+
+        let doc_id = Uuid::new_v4().to_string();
+        let normalized_name = if file_name.trim().is_empty() {
+            match format {
+                DocumentFormat::Hwp => "document.hwp".to_string(),
+                DocumentFormat::Hwpx => "document.hwpx".to_string(),
+            }
+        } else {
+            file_name
+        };
+
+        let session = DocumentSession {
+            doc_id: doc_id.clone(),
+            source_path: None,
+            source_format: format,
+            source_fingerprint: None,
+            dirty: false,
+            revision: 1,
+            core,
+            page_svg_cache: HashMap::new(),
+        };
+
+        let result = session.open_result(normalized_name);
         self.sessions.insert(doc_id.clone(), session);
         self.active_doc_id = Some(doc_id);
         Ok(result)
@@ -186,38 +230,126 @@ impl DocumentSessionManager {
         Ok(())
     }
 
-    pub fn commit_staged_hwp_save(
+    pub fn save_document(
         &mut self,
         doc_id: &str,
-        staged_path: PathBuf,
+        expected_revision: Option<u64>,
+    ) -> Result<SaveResult, String> {
+        let session = self.session_mut(doc_id)?;
+        session.check_revision(expected_revision)?;
+        let path = session
+            .source_path
+            .clone()
+            .ok_or_else(|| "새 문서는 save_document_as를 먼저 호출해야 합니다".to_string())?;
+        session.save_to_path(path, session.source_format)
+    }
+
+    pub fn save_document_as(
+        &mut self,
+        doc_id: &str,
         target_path: PathBuf,
+        format: DocumentFormat,
+        expected_revision: Option<u64>,
+    ) -> Result<SaveResult, String> {
+        let session = self.session_mut(doc_id)?;
+        session.check_revision(expected_revision)?;
+        session.save_to_path(target_path, format)
+    }
+
+    pub fn save_hwp_bytes(
+        &mut self,
+        doc_id: &str,
+        bytes: &[u8],
+        target_path: Option<PathBuf>,
         expected_revision: Option<u64>,
         allow_external_overwrite: bool,
     ) -> Result<SaveResult, String> {
         let session = self.session_mut(doc_id)?;
         session.check_revision(expected_revision)?;
-        if !allow_external_overwrite {
-            session.check_external_modification_for_path(&target_path)?;
+        let path = target_path
+            .or_else(|| session.source_path.clone())
+            .ok_or_else(|| "새 문서는 저장 경로가 필요합니다".to_string())?;
+        if is_content_uri_path(&path) {
+            return Err("content URI 경로는 save_hwp_bytes로 저장할 수 없습니다".to_string());
         }
-        let format = DocumentFormat::from_path(&target_path)?;
+        if !allow_external_overwrite {
+            session.check_external_modification_for_path(&path)?;
+        }
+        let format = DocumentFormat::from_path(&path)?;
         if format == DocumentFormat::Hwpx {
             return Err(
                 "HWPX 경로에는 HWP 바이트를 저장할 수 없습니다. .hwp 파일로 저장하세요."
                     .to_string(),
             );
         }
-        let bytes = std::fs::read(&staged_path).map_err(|e| {
-            format!(
-                "staging 파일을 읽을 수 없습니다: {} ({})",
-                staged_path.display(),
-                e
-            )
-        })?;
-        let core =
-            editable_core_from_bytes(&bytes, "저장 바이트 검증 실패", "저장 문서 변환 실패")?;
-        session.finish_hwp_save(target_path, &bytes, Some(core))?;
-        let _ = std::fs::remove_file(&staged_path);
-        Ok(session.save_result())
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("저장 바이트 검증 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("저장 문서 변환 실패: {}", e))?;
+        atomic_write(&path, bytes)?;
+        session.core = core;
+        session.source_path = Some(path);
+        session.source_format = DocumentFormat::Hwp;
+        session.refresh_source_fingerprint_from_bytes(bytes)?;
+        session.revision += 1;
+        session.dirty = false;
+        session.page_svg_cache.clear();
+        Ok(SaveResult {
+            doc_id: session.doc_id.clone(),
+            source_path: session
+                .source_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            format: session.source_format,
+            revision: session.revision,
+            dirty: session.dirty,
+            warnings: Vec::new(),
+        })
+    }
+
+    pub fn export_hwp_bytes(
+        &self,
+        doc_id: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<Vec<u8>, String> {
+        let session = self.session(doc_id)?;
+        session.check_revision(expected_revision)?;
+        session
+            .core
+            .export_hwp_native()
+            .map_err(|e| format!("HWP 직렬화 실패: {}", e))
+    }
+
+    pub fn commit_external_hwp_save(
+        &mut self,
+        doc_id: &str,
+        bytes: &[u8],
+        expected_revision: Option<u64>,
+    ) -> Result<SaveResult, String> {
+        let session = self.session_mut(doc_id)?;
+        session.check_revision(expected_revision)?;
+
+        let mut core =
+            DocumentCore::from_bytes(bytes).map_err(|e| format!("저장 바이트 검증 실패: {}", e))?;
+        core.convert_to_editable_native()
+            .map_err(|e| format!("저장 문서 변환 실패: {}", e))?;
+
+        session.core = core;
+        session.source_path = None;
+        session.source_format = DocumentFormat::Hwp;
+        session.source_fingerprint = None;
+        session.revision += 1;
+        session.dirty = false;
+        session.page_svg_cache.clear();
+
+        Ok(SaveResult {
+            doc_id: session.doc_id.clone(),
+            source_path: None,
+            format: session.source_format,
+            revision: session.revision,
+            dirty: session.dirty,
+            warnings: Vec::new(),
+        })
     }
 
     pub fn external_modification_status(
@@ -253,7 +385,7 @@ impl DocumentSessionManager {
             }
         }
         let svg = session
-            .ensure_core_loaded()?
+            .core
             .render_page_svg_native(page_index)
             .map_err(|e| format!("페이지 렌더링 실패: {}", e))?;
         session
@@ -268,21 +400,16 @@ impl DocumentSessionManager {
         })
     }
 
-    pub fn query_document(
-        &mut self,
-        doc_id: &str,
-        query: &str,
-        args: Value,
-    ) -> Result<Value, String> {
-        let session = self.session_mut(doc_id)?;
+    pub fn query_document(&self, doc_id: &str, query: &str, args: Value) -> Result<Value, String> {
+        let session = self.session(doc_id)?;
         match query {
-            "documentInfo" => parse_json_string(session.ensure_core_loaded()?.get_document_info()),
-            "pageCount" => Ok(json!(session.ensure_core_loaded()?.page_count())),
+            "documentInfo" => parse_json_string(session.core.get_document_info()),
+            "pageCount" => Ok(json!(session.core.page_count())),
             "pageInfo" => {
                 let page_index = number_arg(&args, "pageIndex")?;
                 parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .get_page_info_native(page_index)
                         .map_err(|e| e.to_string())?,
                 )
@@ -291,7 +418,7 @@ impl DocumentSessionManager {
                 let section_index = number_arg(&args, "sectionIndex")?;
                 parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .get_page_def_native(section_index as usize)
                         .map_err(|e| e.to_string())?,
                 )
@@ -302,7 +429,7 @@ impl DocumentSessionManager {
                 let char_offset = number_arg(&args, "charOffset")?;
                 parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .get_cursor_rect_native(sec as usize, para as usize, char_offset as usize)
                         .map_err(|e| e.to_string())?,
                 )
@@ -313,7 +440,7 @@ impl DocumentSessionManager {
                 let y = float_arg(&args, "y")?;
                 parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .hit_test_native(page_num, x, y)
                         .map_err(|e| e.to_string())?,
                 )
@@ -322,14 +449,14 @@ impl DocumentSessionManager {
                 let sec = number_arg(&args, "sec")?;
                 let para = number_arg(&args, "para")?;
                 Ok(json!(session
-                    .ensure_core_loaded()?
+                    .core
                     .get_paragraph_length_native(sec as usize, para as usize)
                     .map_err(|e| e.to_string())?))
             }
             "paragraphCount" => {
                 let sec = number_arg(&args, "sec")?;
                 Ok(json!(session
-                    .ensure_core_loaded()?
+                    .core
                     .get_paragraph_count_native(sec as usize)
                     .map_err(|e| e.to_string())?))
             }
@@ -354,7 +481,7 @@ impl DocumentSessionManager {
                 let text = string_arg(&args, "text")?;
                 Some(parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .insert_text_native(sec as usize, para as usize, char_offset as usize, text)
                         .map_err(|e| e.to_string())?,
                 )?)
@@ -366,7 +493,7 @@ impl DocumentSessionManager {
                 let count = number_arg(&args, "count")?;
                 Some(parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .delete_text_native(
                             sec as usize,
                             para as usize,
@@ -382,7 +509,7 @@ impl DocumentSessionManager {
                 let char_offset = number_arg(&args, "charOffset")?;
                 Some(parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .split_paragraph_native(sec as usize, para as usize, char_offset as usize)
                         .map_err(|e| e.to_string())?,
                 )?)
@@ -392,7 +519,7 @@ impl DocumentSessionManager {
                 let para = number_arg(&args, "para")?;
                 Some(parse_json_string(
                     session
-                        .ensure_core_loaded()?
+                        .core
                         .merge_paragraph_native(sec as usize, para as usize)
                         .map_err(|e| e.to_string())?,
                 )?)
@@ -401,12 +528,11 @@ impl DocumentSessionManager {
         };
         session.dirty = true;
         session.revision += 1;
-        session.page_count = session.ensure_core_loaded()?.page_count();
         session.page_svg_cache.clear();
         Ok(MutationResult {
             doc_id: session.doc_id.clone(),
             revision: session.revision,
-            page_count: session.page_count,
+            page_count: session.core.page_count(),
             dirty: session.dirty,
             cursor,
             warnings: Vec::new(),
@@ -419,7 +545,7 @@ impl DocumentSessionManager {
             .ok_or_else(|| format!("문서 세션을 찾을 수 없습니다: {}", doc_id))
     }
 
-    pub(crate) fn session_mut(&mut self, doc_id: &str) -> Result<&mut DocumentSession, String> {
+    fn session_mut(&mut self, doc_id: &str) -> Result<&mut DocumentSession, String> {
         self.sessions
             .get_mut(doc_id)
             .ok_or_else(|| format!("문서 세션을 찾을 수 없습니다: {}", doc_id))
@@ -436,28 +562,11 @@ impl DocumentSession {
                 .as_ref()
                 .map(|path| path.to_string_lossy().to_string()),
             format: self.source_format,
-            page_count: self.page_count,
+            page_count: self.core.page_count(),
             revision: self.revision,
             dirty: self.dirty,
             warnings: Vec::new(),
         }
-    }
-
-    pub(crate) fn ensure_core_loaded(&mut self) -> Result<&mut DocumentCore, String> {
-        if self.core.is_none() {
-            let source_path = self
-                .source_path
-                .as_ref()
-                .ok_or_else(|| "네이티브 문서 코어를 사용할 수 없습니다".to_string())?;
-            let bytes = std::fs::read(source_path).map_err(|e| {
-                format!("문서를 읽을 수 없습니다: {} ({})", source_path.display(), e)
-            })?;
-            let core =
-                editable_core_from_bytes(&bytes, "문서 파싱 실패", "편집 가능 문서 변환 실패")?;
-            self.page_count = core.page_count();
-            self.core = Some(core);
-        }
-        Ok(self.core.as_mut().expect("core must be loaded"))
     }
 
     fn check_revision(&self, expected_revision: Option<u64>) -> Result<(), String> {
@@ -470,6 +579,38 @@ impl DocumentSession {
             }
         }
         Ok(())
+    }
+
+    fn save_to_path(
+        &mut self,
+        target_path: PathBuf,
+        format: DocumentFormat,
+    ) -> Result<SaveResult, String> {
+        if format == DocumentFormat::Hwpx {
+            return Err("HWPX 저장은 아직 안전하게 지원하지 않습니다".to_string());
+        }
+        self.check_external_modification_for_path(&target_path)?;
+        let bytes = self
+            .core
+            .export_hwp_native()
+            .map_err(|e| format!("HWP 직렬화 실패: {}", e))?;
+        atomic_write(&target_path, &bytes)?;
+        self.source_path = Some(target_path);
+        self.source_format = format;
+        self.refresh_source_fingerprint_from_bytes(&bytes)?;
+        self.revision += 1;
+        self.dirty = false;
+        Ok(SaveResult {
+            doc_id: self.doc_id.clone(),
+            source_path: self
+                .source_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            format: self.source_format,
+            revision: self.revision,
+            dirty: self.dirty,
+            warnings: Vec::new(),
+        })
     }
 
     fn check_external_modification_for_path(&self, target_path: &Path) -> Result<(), String> {
@@ -563,40 +704,6 @@ impl DocumentSession {
         }
         Ok(())
     }
-
-    fn finish_hwp_save(
-        &mut self,
-        target_path: PathBuf,
-        bytes: &[u8],
-        core_override: Option<DocumentCore>,
-    ) -> Result<(), String> {
-        atomic_write(&target_path, bytes)?;
-        if let Some(core) = core_override {
-            self.page_count = core.page_count();
-            self.core = Some(core);
-        }
-        self.source_path = Some(target_path);
-        self.source_format = DocumentFormat::Hwp;
-        self.refresh_source_fingerprint_from_bytes(bytes)?;
-        self.revision += 1;
-        self.dirty = false;
-        self.page_svg_cache.clear();
-        Ok(())
-    }
-
-    fn save_result(&self) -> SaveResult {
-        SaveResult {
-            doc_id: self.doc_id.clone(),
-            source_path: self
-                .source_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            format: self.source_format,
-            revision: self.revision,
-            dirty: self.dirty,
-            warnings: Vec::new(),
-        }
-    }
 }
 
 impl DocumentFormat {
@@ -643,59 +750,43 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn file_fingerprint(path: &Path) -> std::io::Result<FileFingerprint> {
     let metadata = std::fs::metadata(path)?;
     let mut file = std::fs::File::open(path)?;
-    file_fingerprint_from_metadata(metadata, hash_reader(&mut file)?)
+    let mut hasher = DefaultHasher::new();
+    hash_reader(&mut file, &mut hasher)?;
+    file_fingerprint_from_metadata(metadata, hasher.finish())
 }
 
 fn file_fingerprint_from_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<FileFingerprint> {
     let metadata = std::fs::metadata(path)?;
-    file_fingerprint_from_metadata(metadata, hash_bytes(bytes))
+    let mut hasher = DefaultHasher::new();
+    hasher.write(bytes);
+    file_fingerprint_from_metadata(metadata, hasher.finish())
 }
 
 fn file_fingerprint_from_metadata(
     metadata: std::fs::Metadata,
-    content_hash: u32,
+    content_hash: u64,
 ) -> std::io::Result<FileFingerprint> {
     let modified = metadata.modified()?;
-    let modified_millis = modified
+    let modified_nanos = modified
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64;
+        .as_nanos();
     Ok(FileFingerprint {
         len: metadata.len(),
-        modified_millis,
+        modified_nanos,
         content_hash,
     })
 }
 
-fn hash_reader(reader: &mut impl Read) -> std::io::Result<u32> {
-    let mut hash = fnv1a32_init();
+fn hash_reader(reader: &mut impl Read, hasher: &mut impl Hasher) -> std::io::Result<()> {
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
-            return Ok(hash);
+            return Ok(());
         }
-        hash = fnv1a32_update(hash, &buffer[..read]);
+        hasher.write(&buffer[..read]);
     }
-}
-
-fn hash_bytes(bytes: &[u8]) -> u32 {
-    fnv1a32_update(fnv1a32_init(), bytes)
-}
-
-const FNV1A32_OFFSET_BASIS: u32 = 0x811C9DC5;
-const FNV1A32_PRIME: u32 = 0x01000193;
-
-fn fnv1a32_init() -> u32 {
-    FNV1A32_OFFSET_BASIS
-}
-
-fn fnv1a32_update(mut hash: u32, bytes: &[u8]) -> u32 {
-    for byte in bytes {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(FNV1A32_PRIME);
-    }
-    hash
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -708,16 +799,11 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-pub(crate) fn editable_core_from_bytes(
-    bytes: &[u8],
-    parse_context: &str,
-    convert_context: &str,
-) -> Result<DocumentCore, String> {
-    let mut core =
-        DocumentCore::from_bytes(bytes).map_err(|e| format!("{}: {}", parse_context, e))?;
-    core.convert_to_editable_native()
-        .map_err(|e| format!("{}: {}", convert_context, e))?;
-    Ok(core)
+fn is_content_uri_path(path: &Path) -> bool {
+    path.to_string_lossy()
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("content://")
 }
 
 pub fn parse_json_string(raw: String) -> Result<Value, String> {
@@ -777,75 +863,6 @@ mod tests {
     }
 
     #[test]
-    fn open_document_tracking_creates_metadata_only_session() {
-        let mut manager = DocumentSessionManager::default();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tracked.hwp");
-        atomic_write(&path, b"tracked bytes").unwrap();
-
-        let result = manager.open_document_tracking(path.clone(), None).unwrap();
-        let session = manager.session(&result.doc_id).unwrap();
-
-        assert_eq!(
-            result.source_path.as_deref(),
-            Some(path.to_string_lossy().as_ref())
-        );
-        assert_eq!(result.page_count, 0);
-        assert!(session.core.is_none());
-        assert!(session.source_fingerprint.is_some());
-    }
-
-    #[test]
-    fn tracked_session_loads_core_on_first_query() {
-        let mut manager = DocumentSessionManager::default();
-        let opened = manager.create_document().unwrap();
-        let bytes = manager
-            .session(&opened.doc_id)
-            .unwrap()
-            .core
-            .as_ref()
-            .unwrap()
-            .export_hwp_native()
-            .unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tracked.hwp");
-        atomic_write(&path, &bytes).unwrap();
-
-        let tracked = manager.open_document_tracking(path, None).unwrap();
-        assert!(manager.session(&tracked.doc_id).unwrap().core.is_none());
-
-        let page_count = manager
-            .query_document(&tracked.doc_id, "pageCount", json!({}))
-            .unwrap();
-
-        assert_eq!(page_count, json!(1));
-        assert!(manager.session(&tracked.doc_id).unwrap().core.is_some());
-    }
-
-    #[test]
-    fn open_document_tracking_keeps_loaded_fingerprint_when_provided() {
-        let mut manager = DocumentSessionManager::default();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tracked.hwp");
-        atomic_write(&path, b"tracked bytes").unwrap();
-        let fingerprint = FileFingerprint {
-            len: 12,
-            modified_millis: 34,
-            content_hash: 56,
-        };
-
-        let result = manager
-            .open_document_tracking(path, Some(fingerprint.clone()))
-            .unwrap();
-
-        assert_eq!(
-            manager.session(&result.doc_id).unwrap().source_fingerprint,
-            Some(fingerprint)
-        );
-    }
-
-    #[test]
     fn byte_and_stream_fingerprints_match_for_large_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.hwp");
@@ -871,8 +888,7 @@ mod tests {
             source_fingerprint: Some(file_fingerprint(&path).unwrap()),
             dirty: false,
             revision: 1,
-            page_count: 0,
-            core: Some(DocumentCore::new_empty()),
+            core: DocumentCore::new_empty(),
             page_svg_cache: HashMap::new(),
         };
 
@@ -909,8 +925,7 @@ mod tests {
             source_fingerprint: Some(file_fingerprint(&source_path).unwrap()),
             dirty: false,
             revision: 1,
-            page_count: 0,
-            core: Some(DocumentCore::new_empty()),
+            core: DocumentCore::new_empty(),
             page_svg_cache: HashMap::new(),
         };
 
@@ -936,8 +951,7 @@ mod tests {
             source_fingerprint: Some(file_fingerprint(&path).unwrap()),
             dirty: false,
             revision: 1,
-            page_count: 0,
-            core: Some(DocumentCore::new_empty()),
+            core: DocumentCore::new_empty(),
             page_svg_cache: HashMap::new(),
         };
 
@@ -965,76 +979,47 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("문서 revision이 변경되었습니다"));
-        assert_eq!(
-            manager.session(&opened.doc_id).unwrap().revision,
-            opened.revision
-        );
+        assert_eq!(manager.session(&opened.doc_id).unwrap().revision, opened.revision);
         assert!(!manager.session(&opened.doc_id).unwrap().dirty);
     }
 
     #[test]
-    fn commit_staged_hwp_save_reads_staged_file_and_updates_session() {
+    fn save_hwp_bytes_rejects_hwpx_target_before_parsing_bytes() {
         let mut manager = DocumentSessionManager::default();
         let opened = manager.create_document().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let staged_path = dir.path().join("save.tmp");
-        let target_path = dir.path().join("saved.hwp");
-
-        let bytes = manager
-            .session(&opened.doc_id)
-            .unwrap()
-            .core
-            .as_ref()
-            .unwrap()
-            .export_hwp_native()
-            .unwrap();
-        std::fs::write(&staged_path, &bytes).unwrap();
-
-        let result = manager
-            .commit_staged_hwp_save(
-                &opened.doc_id,
-                staged_path.clone(),
-                target_path.clone(),
-                Some(opened.revision),
-                false,
-            )
-            .unwrap();
-
-        assert_eq!(
-            result.source_path.as_deref(),
-            Some(target_path.to_string_lossy().as_ref())
-        );
-        assert_eq!(std::fs::read(&target_path).unwrap(), bytes);
-        assert!(!staged_path.exists());
-        assert_eq!(
-            manager.session(&opened.doc_id).unwrap().revision,
-            opened.revision + 1
-        );
-        assert!(!manager.session(&opened.doc_id).unwrap().dirty);
-    }
-
-    #[test]
-    fn commit_staged_hwp_save_rejects_hwpx_target_before_reading_staged_bytes() {
-        let mut manager = DocumentSessionManager::default();
-        let opened = manager.create_document().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let staged_path = dir.path().join("save.tmp");
-        let target_path = dir.path().join("saved.hwpx");
-
-        std::fs::write(&staged_path, b"not a hwp document").unwrap();
+        let target = tempfile::tempdir().unwrap().path().join("doc.hwpx");
 
         let error = manager
-            .commit_staged_hwp_save(
+            .save_hwp_bytes(
                 &opened.doc_id,
-                staged_path.clone(),
-                target_path,
+                b"not a hwp document",
+                Some(target),
                 Some(opened.revision),
                 false,
             )
             .unwrap_err();
 
         assert!(error.contains("HWPX 경로에는 HWP 바이트를 저장할 수 없습니다"));
-        assert!(staged_path.exists());
+    }
+
+    #[test]
+    fn save_hwp_bytes_rejects_content_uri_target_before_parsing_bytes() {
+        let mut manager = DocumentSessionManager::default();
+        let opened = manager.create_document().unwrap();
+        let target =
+            PathBuf::from("content://com.android.providers.downloads.documents/document/tmp-file.hwp");
+
+        let error = manager
+            .save_hwp_bytes(
+                &opened.doc_id,
+                b"not a hwp document",
+                Some(target),
+                Some(opened.revision),
+                false,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("content URI 경로는 save_hwp_bytes로 저장할 수 없습니다"));
     }
 
     #[test]
