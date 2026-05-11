@@ -6,10 +6,9 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
-    "@rhwp/core": "0.7.9",
+    "@rhwp/core": "0.7.2",
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@tauri-apps/plugin-fs": "2.5.0"
+    "@tauri-apps/plugin-dialog": "^2.7.0"
   },
   "scripts": {
     "dev": "vite",
@@ -19,7 +18,7 @@
   },
   "devDependencies": {
     "typescript": "^6.0.2",
-    "vite": "^8.0.8",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.2",
+    "vite": "^8.0.8"
   }
 }

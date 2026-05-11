@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-default",
+  "description": "Default HOP mobile capability",
+  "platforms": ["android"],
+  "windows": ["main", "main*"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "log:default",
+    "store:default"
+  ]
+}

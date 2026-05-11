@@ -1,18 +1,15 @@
-import { createBridge, isTauriRuntime } from '@/core/bridge-factory';
-import {
-  applyDesktopChromePlatformState,
-  installNonEditorContextMenuGuards,
-} from '@/core/desktop-chrome';
-import type { DocumentInfo } from '@/core/types';
+import { createBridge, isTauriMobileRuntime, isTauriRuntime } from '@/core/bridge-factory';
+import { installAndroidNativeHostBridge } from '@/core/android-native-bootstrap';
+import type { CharProperties, DocumentInfo, DocumentPosition } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { createDesktopDocument, setupDesktopEvents } from '@/core/desktop-events';
-import { detectDesktopPlatform, hasPrimaryModifier, hydrateDesktopPlatform } from '@/core/platform';
+import { setupMobileDraftAutosave } from '@/core/mobile-autosave';
+import { setupMobileEvents } from '@/core/mobile-events';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
 import { Toolbar } from '@/ui/toolbar';
 import { MenuBar } from '@/ui/menu-bar';
 import { loadWebFonts } from '@/core/font-loader';
-import { isSupportedDocumentPath } from '@/core/document-files';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
 import type { EditorContext, CommandServices } from '@/command/types';
@@ -26,22 +23,27 @@ import { pageCommands } from '@/command/commands/page';
 import { toolCommands } from '@/command/commands/tool';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
-import { showValidationModalIfNeeded } from '@/ui/validation-modal';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
 import { enhanceCustomSelects } from '@/ui/custom-select';
-import { UpdateNotice, type UpdateNoticeActions } from '@/ui/update-notice';
-import type { DesktopBridgeApi } from '@/core/tauri-bridge';
+import { setupMobileShell } from '@/ui/mobile-shell';
+
+installAndroidNativeHostBridge();
 
 const wasm = createBridge();
 const eventBus = new EventBus();
-let desktopPlatform = detectDesktopPlatform();
 
 type DirtyAwareBridge = {
   markDocumentDirty?(): void;
   hasUnsavedChanges?(): boolean;
+};
+
+type SnapshotBridge = {
+  pageCount: number;
+  fileName?: string;
+  exportHwp(): Uint8Array;
 };
 
 // E2E 테스트용 전역 노출 (개발 모드 전용)
@@ -100,18 +102,124 @@ const sbMessage = () => document.getElementById('sb-message')!;
 const sbPage = () => document.getElementById('sb-page')!;
 const sbSection = () => document.getElementById('sb-section')!;
 const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
-const ZOOM_STEP = 0.1;
+
+type PendingCharFormatHandler = Pick<
+  InputHandler,
+  'hasSelection' | 'getCursorPosition' | 'applyCharPropsToRange'
+> & {
+  textarea?: HTMLTextAreaElement;
+};
+
+function installCollapsedCaretCharFormatBridge(
+  bus: EventBus,
+  handler: InputHandler,
+): void {
+  const input = handler as unknown as PendingCharFormatHandler;
+  const textarea = input.textarea;
+  if (!textarea) return;
+
+  let pendingProps: Partial<CharProperties> | null = null;
+  let beforeInputPos: DocumentPosition | null = null;
+  let applying = false;
+
+  bus.on('format-char', (payload) => {
+    if (applying || handler.hasSelection()) {
+      pendingProps = null;
+      return;
+    }
+    const nextProps = normalizeCharFormatPayload(payload);
+    if (!nextProps) return;
+    pendingProps = {
+      ...(pendingProps ?? {}),
+      ...nextProps,
+    };
+  });
+
+  textarea.addEventListener('beforeinput', (event) => {
+    if (!pendingProps || handler.hasSelection()) return;
+    const inputEvent = event as InputEvent;
+    if (!isInsertInputType(inputEvent.inputType)) return;
+    beforeInputPos = cloneDocumentPosition(handler.getCursorPosition());
+  });
+
+  textarea.addEventListener('input', (event) => {
+    if (!pendingProps || !beforeInputPos) return;
+    const inputEvent = event as InputEvent;
+    if (!isInsertInputType(inputEvent.inputType)) {
+      beforeInputPos = null;
+      return;
+    }
+    const afterInputPos = cloneDocumentPosition(handler.getCursorPosition());
+    const range = resolveInsertedRange(beforeInputPos, afterInputPos);
+    beforeInputPos = null;
+    if (!range) return;
+
+    const props = pendingProps;
+    pendingProps = null;
+    applying = true;
+    try {
+      handler.applyCharPropsToRange(range.start, range.end, props);
+    } finally {
+      applying = false;
+    }
+  });
+}
+
+function normalizeCharFormatPayload(payload: unknown): Partial<CharProperties> | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const entries = Object.entries(payload).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) return null;
+  return Object.fromEntries(entries) as Partial<CharProperties>;
+}
+
+function isInsertInputType(inputType?: string | null): boolean {
+  return !inputType || inputType.startsWith('insert');
+}
+
+function resolveInsertedRange(
+  start: DocumentPosition,
+  end: DocumentPosition,
+): { start: DocumentPosition; end: DocumentPosition } | null {
+  if (!sameTextFlowContext(start, end)) return null;
+  if (end.paragraphIndex < start.paragraphIndex) return null;
+  if (end.paragraphIndex === start.paragraphIndex && end.charOffset <= start.charOffset) return null;
+  return { start, end };
+}
+
+function sameTextFlowContext(a: DocumentPosition, b: DocumentPosition): boolean {
+  return a.sectionIndex === b.sectionIndex
+    && a.parentParaIndex === b.parentParaIndex
+    && a.controlIndex === b.controlIndex
+    && a.cellIndex === b.cellIndex
+    && a.isTextBox === b.isTextBox
+    && JSON.stringify(a.cellPath ?? null) === JSON.stringify(b.cellPath ?? null);
+}
+
+function cloneDocumentPosition(position: DocumentPosition): DocumentPosition {
+  return {
+    ...position,
+    cellPath: position.cellPath?.map((entry) => ({ ...entry })),
+    cursorRect: position.cursorRect ? { ...position.cursorRect } : undefined,
+  };
+}
+
+function applyMobileImeOverlayStyle(container: HTMLElement): void {
+  const overlay = container.querySelector<HTMLElement>('.caret-composition');
+  if (!overlay) return;
+  overlay.style.background = '#fff';
+  overlay.style.color = '#111';
+}
 
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
-    const tauriRuntime = isTauriRuntime();
-    desktopPlatform = await hydrateDesktopPlatform();
-    applyDesktopChromePlatformState(document, desktopPlatform);
     msg.textContent = '웹폰트 로딩 중...';
-    await loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    const webFontLoad = loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
     msg.textContent = '문서 엔진 로딩 중...';
     await wasm.initialize();
+    void webFontLoad.catch((error) => {
+      console.warn('[main] 웹폰트 초기 로딩 실패:', error);
+    });
     msg.textContent = 'HWP 파일을 선택해주세요.';
 
     const container = document.getElementById('scroll-container')!;
@@ -133,6 +241,10 @@ async function initialize(): Promise<void> {
       canvasView.getVirtualScroll(),
       canvasView.getViewportManager(),
     );
+    if (isTauriMobileRuntime()) {
+      applyMobileImeOverlayStyle(container);
+    }
+    installCollapsedCaretCharFormatBridge(eventBus, inputHandler);
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
     toolbar.setEnabled(false);
@@ -157,7 +269,6 @@ async function initialize(): Promise<void> {
     enhanceCustomSelects(document);
 
     new MenuBar(document.getElementById('menu-bar')!, eventBus, dispatcher);
-    installNonEditorContextMenuGuards(document);
 
     // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
     document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
@@ -200,9 +311,6 @@ async function initialize(): Promise<void> {
     setupZoomControls();
     setupEventListeners();
     setupGlobalShortcuts();
-    const updateNotice = tauriRuntime
-      ? new UpdateNotice(updateNoticeActions(wasm))
-      : null;
     void setupDesktopEvents({
       bridge: wasm,
       dispatcher,
@@ -210,11 +318,49 @@ async function initialize(): Promise<void> {
       setMessage: (message) => {
         sbMessage().textContent = message;
       },
-      onUpdateState: (state) => {
-        updateNotice?.setState(state);
+    });
+    void setupMobileEvents({
+      bridge: wasm,
+      eventBus,
+      setMessage: (message) => {
+        sbMessage().textContent = message;
       },
-    }).catch((error) => {
-      console.error('[main] desktop event setup failed:', error);
+    });
+    setupMobileShell({
+      dispatcher,
+      setStatus: (message) => {
+        sbMessage().textContent = message;
+      },
+    });
+    setupMobileDraftAutosave({
+      enabled: isTauriMobileRuntime(),
+      eventBus,
+      setMessage: (message) => {
+        sbMessage().textContent = message;
+      },
+      getCurrentSnapshot: () => {
+        const snapshotBridge = wasm as unknown as SnapshotBridge;
+        if (snapshotBridge.pageCount === 0) return null;
+
+        const dirtyBridge = wasm as DirtyAwareBridge;
+        const hasUnsavedChanges = dirtyBridge.hasUnsavedChanges?.() ?? true;
+        if (!hasUnsavedChanges) return null;
+
+        try {
+          return {
+            fileName: normalizeAutosaveFileName(snapshotBridge.fileName),
+            bytes: snapshotBridge.exportHwp(),
+            savedAt: Date.now(),
+          };
+        } catch (error) {
+          console.warn('[main] 모바일 임시 저장 스냅샷 생성 실패:', error);
+          return null;
+        }
+      },
+      restoreSnapshot: async (snapshot) => {
+        const docInfo = wasm.loadDocument(snapshot.bytes, snapshot.fileName);
+        await initializeDocument(docInfo, `${snapshot.fileName} — 임시 저장본 복구`);
+      },
     });
 
     // E2E 테스트용 전역 노출 (개발 모드 전용)
@@ -228,21 +374,6 @@ async function initialize(): Promise<void> {
   }
 }
 
-function updateNoticeActions(bridge: unknown): UpdateNoticeActions {
-  const desktop = bridge as Partial<
-    Pick<DesktopBridgeApi, 'startUpdateInstall' | 'restartToApplyUpdate'>
-  >;
-
-  return {
-    startUpdateInstall: desktop.startUpdateInstall
-      ? () => desktop.startUpdateInstall!()
-      : undefined,
-    restartToApplyUpdate: desktop.restartToApplyUpdate
-      ? () => desktop.restartToApplyUpdate!()
-      : undefined,
-  };
-}
-
 /**
  * 전역 단축키 핸들러 — InputHandler.active 여부와 무관하게 동작해야 하는 단축키.
  * 예: 문서 미로드 상태에서도 Alt+N(새 문서), Ctrl+O(열기) 등.
@@ -251,21 +382,14 @@ function setupGlobalShortcuts(): void {
   document.addEventListener('keydown', (e) => {
     // input/textarea 등 편집 가능 요소 내부에서는 무시
     const target = e.target as HTMLElement;
-    if (
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      target.isContentEditable
-    ) {
-      return;
-    }
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
     // InputHandler가 활성 상태이면 자체 처리에 맡김
     if (inputHandler?.isActive()) return;
 
-    const primaryModifier = hasPrimaryModifier(e, desktopPlatform);
+    const ctrlOrMeta = e.ctrlKey || e.metaKey;
 
     // Alt+N / Alt+ㅜ → 새 문서 (문서 미로드 상태에서도 동작)
-    if (e.altKey && !primaryModifier && !e.shiftKey) {
+    if (e.altKey && !ctrlOrMeta && !e.shiftKey) {
       if (e.key === 'n' || e.key === 'N' || e.key === 'ㅜ') {
         e.preventDefault();
         dispatcher.dispatch('file:new-doc');
@@ -273,7 +397,7 @@ function setupGlobalShortcuts(): void {
       }
     }
 
-    if (primaryModifier && !e.altKey) {
+    if (ctrlOrMeta && !e.altKey) {
       let commandId: string | null = null;
       const key = e.key.toLowerCase();
       if (e.shiftKey && key === 'n') commandId = 'file:new-window';
@@ -297,7 +421,8 @@ function setupFileInput(): void {
   fileInput.addEventListener('change', async (e) => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
-    if (!isSupportedDocumentPath(file.name)) {
+    const name = file.name.toLowerCase();
+    if (!name.endsWith('.hwp') && !name.endsWith('.hwpx')) {
       alert('HWP/HWPX 파일만 지원합니다.');
       return;
     }
@@ -324,7 +449,8 @@ function setupFileInput(): void {
     if (isTauriRuntime()) return;
     const file = e.dataTransfer?.files[0];
     if (!file) return;
-    if (!isSupportedDocumentPath(file.name)) {
+    const dropName = file.name.toLowerCase();
+    if (!dropName.endsWith('.hwp') && !dropName.endsWith('.hwpx')) {
       alert('HWP/HWPX 파일만 지원합니다.');
       return;
     }
@@ -335,34 +461,12 @@ function setupFileInput(): void {
 function setupZoomControls(): void {
   if (!canvasView) return;
   const vm = canvasView.getViewportManager();
-  const applyIncrementalZoom = (direction: 1 | -1) => {
-    vm.setZoom(vm.getZoom() + ZOOM_STEP * direction);
-  };
-
-  if (isTauriRuntime() && desktopPlatform === 'windows') {
-    document.addEventListener(
-      'wheel',
-      (e) => {
-        if (!e.ctrlKey && !e.metaKey) return;
-
-        // On Windows WebView2, enabling pinch zoom support can also reopen page zoom.
-        // Capture and reroute modified wheel gestures to document zoom before the
-        // embedded browser consumes them as native page scaling.
-        e.preventDefault();
-        e.stopPropagation();
-
-        if (wasm.pageCount === 0) return;
-        applyIncrementalZoom(e.deltaY < 0 ? 1 : -1);
-      },
-      { capture: true, passive: false },
-    );
-  }
 
   document.getElementById('sb-zoom-in')!.addEventListener('click', () => {
-    applyIncrementalZoom(1);
+    vm.setZoom(vm.getZoom() + 0.1);
   });
   document.getElementById('sb-zoom-out')!.addEventListener('click', () => {
-    applyIncrementalZoom(-1);
+    vm.setZoom(vm.getZoom() - 0.1);
   });
 
   // 폭 맞춤: 용지 폭에 맞게 줌 조절
@@ -405,15 +509,22 @@ function setupZoomControls(): void {
     if (!e.ctrlKey && !e.metaKey) return;
     if (e.key === '=' || e.key === '+') {
       e.preventDefault();
-      applyIncrementalZoom(1);
+      vm.setZoom(vm.getZoom() + 0.1);
     } else if (e.key === '-') {
       e.preventDefault();
-      applyIncrementalZoom(-1);
+      vm.setZoom(vm.getZoom() - 0.1);
     } else if (e.key === '0') {
       e.preventDefault();
       vm.setZoom(1.0);
     }
   });
+}
+
+function normalizeAutosaveFileName(fileName: string | undefined): string {
+  const normalized = fileName?.trim() ?? '';
+  if (!normalized) return 'document.hwp';
+  if (/\.(hwp|hwpx)$/i.test(normalized)) return normalized;
+  return `${normalized}.hwp`;
 }
 
 let totalSections = 1;
@@ -521,20 +632,6 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     toolbar?.setEnabled(true);
     toolbar?.initStyleDropdown();
     inputHandler?.activateWithCaretPosition();
-
-    try {
-      const report = wasm.getValidationWarnings();
-      if (report.count > 0) {
-        const choice = await showValidationModalIfNeeded(report);
-        if (choice === 'auto-fix') {
-          const reflowedCount = wasm.reflowLinesegs();
-          canvasView?.loadDocument();
-          msg.textContent = `${displayName} (비표준 lineseg ${reflowedCount}건 자동 보정됨)`;
-        }
-      }
-    } catch (error) {
-      console.warn('[validation] 감지/보정 실패 (치명적이지 않음):', error);
-    }
   } catch (error) {
     console.error('[initDoc] 오류:', error);
     if (window.innerWidth < 768) alert(`초기화 오류: ${error}`);

@@ -1803,7 +1803,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hop-desktop"
-version = "0.1.11"
+version = "0.1.4"
 dependencies = [
  "open",
  "pdf-writer",
@@ -1814,7 +1814,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
- "tauri-plugin-fs",
  "tauri-plugin-log",
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
@@ -3671,7 +3670,7 @@ dependencies = [
 
 [[package]]
 name = "rhwp"
-version = "0.7.9"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
@@ -3681,12 +3680,10 @@ dependencies = [
  "embedded-io",
  "encoding_rs",
  "flate2",
- "image",
  "js-sys",
  "paste",
  "pdf-writer",
  "quick-xml 0.39.2",
- "serde",
  "snafu",
  "strum",
  "subsetter",
@@ -4321,7 +4318,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -5043,7 +5040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

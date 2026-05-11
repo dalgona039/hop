@@ -1,7 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentInfo } from '@/core/types';
-import { remove, stat } from '@tauri-apps/plugin-fs';
-import { finiteFileSize, readFileInChunks, writeFileInChunks } from './chunked-fs';
+import { isUriWritePermissionError, requestWritableUri, writeUriBytes } from './android-uri-host';
 
 type DocumentFormat = 'hwp' | 'hwpx';
 
@@ -16,10 +15,9 @@ interface NativeOpenResult {
   warnings: unknown[];
 }
 
-interface SourceFingerprint {
-  len: number;
-  modifiedMillis: number;
-  contentHash: number;
+interface NativeOpenWithBytesResult {
+  document: NativeOpenResult;
+  bytes: number[];
 }
 
 interface ExternalModificationStatus {
@@ -27,28 +25,6 @@ interface ExternalModificationStatus {
   sourcePath?: string | null;
   reason?: string | null;
 }
-
-export type DesktopUpdateState =
-  | { status: 'idle' }
-  | {
-      status: 'available';
-      version: string;
-    }
-  | {
-      status: 'downloading';
-      version: string;
-      downloadedBytes: number;
-      totalBytes?: number | null;
-    }
-  | {
-      status: 'ready';
-      version: string;
-    }
-  | {
-      status: 'error';
-      version: string;
-      message: string;
-    };
 
 export interface DesktopSaveResult {
   docId: string;
@@ -64,22 +40,34 @@ export interface DesktopLoadPayload {
   message: string;
 }
 
+export interface ExternalSavePayload {
+  docId: string;
+  revision: number;
+  fileName: string;
+  bytes: number[];
+}
+
 export interface DesktopBridgeApi {
   openDocumentFromDialog(): Promise<DesktopLoadPayload | null>;
   openDocumentByPath(path: string): Promise<DesktopLoadPayload | null>;
+  openDocumentWithExternalBytes(
+    fileName: string,
+    bytes: Uint8Array,
+    format?: DocumentFormat,
+    sourceUri?: string,
+  ): Promise<DesktopLoadPayload | null>;
   takePendingOpenPaths(): Promise<string[]>;
   createNewDocumentAsync(): Promise<DesktopLoadPayload | null>;
   createNewWindow(): Promise<string>;
   saveDocumentFromCommand(): Promise<DesktopSaveResult | null>;
   saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null>;
+  exportHwpBytesForExternalSave(): Promise<ExternalSavePayload>;
+  commitExternalHwpSave(bytes: Uint8Array, fileName?: string): Promise<DesktopSaveResult>;
+  bindExternalSourceUri?(sourceUri: string, fileName?: string): void;
   exportPdfFromCommand(): Promise<string | null>;
   printCurrentWebview(): Promise<void>;
   destroyCurrentWindow(): Promise<void>;
-  cancelAppQuit(): Promise<void>;
   revealInFolder(): Promise<void>;
-  getUpdateState(): Promise<DesktopUpdateState>;
-  startUpdateInstall(): Promise<void>;
-  restartToApplyUpdate(): Promise<void>;
   hasUnsavedChanges(): boolean;
   markDocumentDirty(): void;
   confirmWindowClose(): Promise<boolean>;
@@ -88,6 +76,7 @@ export interface DesktopBridgeApi {
 export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   private docId: string | null = null;
   private sourcePath: string | null = null;
+  private externalSourceUri: string | null = null;
   private sourceFormat: DocumentFormat = 'hwp';
   private revision = 0;
   private dirty = false;
@@ -105,23 +94,48 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   async openDocumentByPath(path: string): Promise<DesktopLoadPayload | null> {
     if (!(await this.confirmReadyForDocumentReplacement())) return null;
 
-    await this.invoke<void>('prepare_document_open', { path });
-    const { bytes, sourceFingerprint } = await this.readFileForOpen(path);
-    const result = await this.invoke<NativeOpenResult>('open_document_tracking', {
-      path,
-      sourceFingerprint,
+    const result = await this.invoke<NativeOpenWithBytesResult>('open_document_with_bytes', { path });
+    const previousDocId = this.docId;
+    try {
+      const info = super.loadDocument(new Uint8Array(result.bytes), result.document.fileName);
+      this.applyNativeOpenResult(result.document);
+      this.externalSourceUri = null;
+      await this.closeReplacedDocument(previousDocId, result.document.docId);
+      return {
+        docInfo: info,
+        message: `${result.document.fileName} — ${info.pageCount}페이지`,
+      };
+    } catch (error) {
+      await this.closeNativeDocument(result.document.docId);
+      throw error;
+    }
+  }
+
+  async openDocumentWithExternalBytes(
+    fileName: string,
+    bytes: Uint8Array,
+    format?: DocumentFormat,
+    sourceUri?: string,
+  ): Promise<DesktopLoadPayload | null> {
+    if (!(await this.confirmReadyForDocumentReplacement())) return null;
+
+    const document = await this.invoke<NativeOpenResult>('open_document_with_payload', {
+      fileName,
+      format,
+      bytes: Array.from(bytes),
     });
     const previousDocId = this.docId;
     try {
-      const info = super.loadDocument(bytes, result.fileName);
-      this.applyNativeOpenResult(result);
-      await this.closeReplacedDocument(previousDocId, result.docId);
+      const info = super.loadDocument(bytes, document.fileName);
+      this.applyNativeOpenResult(document);
+      this.externalSourceUri = sourceUri ?? null;
+      await this.closeReplacedDocument(previousDocId, document.docId);
       return {
         docInfo: info,
-        message: `${result.fileName} — ${info.pageCount}페이지`,
+        message: `${document.fileName} — ${info.pageCount}페이지`,
       };
     } catch (error) {
-      await this.closeNativeDocument(result.docId);
+      await this.closeNativeDocument(document.docId);
       throw error;
     }
   }
@@ -155,41 +169,80 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
 
   async saveDocumentFromCommand(): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
+    if (!this.externalSourceUri && this.sourcePath && this.isContentUri(this.sourcePath)) {
+      this.externalSourceUri = this.sourcePath;
+      this.sourcePath = null;
+    }
+    if (this.externalSourceUri) {
+      return this.saveExternalUriHwpBytes(docId, this.externalSourceUri);
+    }
     if (!this.sourcePath) {
       return this.saveDocumentAsFromCommand();
     }
     if (this.sourceFormat === 'hwpx') {
       throw new Error('HWPX 원본 저장은 아직 안전하게 지원하지 않습니다. 다른 이름으로 저장에서 HWP 파일로 저장하세요.');
     }
-    return this.saveHwpThroughStaging(docId, null);
+    return this.saveHwpBytes(docId, null);
   }
 
   async saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
-    const targetPath = await this.selectSavePath(this.suggestedHwpName(), 'HWP 문서', ['hwp']);
-    if (!targetPath) return null;
-    return this.saveHwpThroughStaging(docId, this.withExtension(targetPath, 'hwp'));
+    const suggestedName = this.suggestedHwpName();
+    const targetPath = await this.selectSavePath(suggestedName, 'HWP 문서', ['hwp']);
+    if (targetPath) {
+      const normalized = targetPath.trim();
+      if (this.isContentUri(normalized)) {
+        return this.saveExternalUriFromTarget(normalized, suggestedName);
+      }
+      return this.saveHwpBytes(docId, this.withExtension(normalized, 'hwp'));
+    }
+
+    const writableUri = await requestWritableUri(suggestedName, 'application/x-hwp');
+    if (!writableUri) return null;
+    return this.saveExternalUriFromTarget(writableUri, suggestedName);
+  }
+
+  async exportHwpBytesForExternalSave(): Promise<ExternalSavePayload> {
+    const docId = this.ensureDocumentLoaded();
+    return this.invoke<ExternalSavePayload>('export_hwp_bytes_for_external_save', {
+      docId,
+      expectedRevision: this.revision,
+    });
+  }
+
+  async commitExternalHwpSave(bytes: Uint8Array, fileName?: string): Promise<DesktopSaveResult> {
+    const docId = this.ensureDocumentLoaded();
+    const result = await this.invoke<DesktopSaveResult>('commit_external_hwp_save', {
+      docId,
+      bytes: Array.from(bytes),
+      expectedRevision: this.revision,
+    });
+    this.applyNativeSaveResult(result);
+    if (!result.sourcePath && fileName) {
+      this.fileName = fileName;
+      this.updateDocumentTitle();
+    }
+    return result;
+  }
+
+  bindExternalSourceUri(sourceUri: string, fileName?: string): void {
+    this.externalSourceUri = sourceUri;
+    if (fileName && fileName.trim().length > 0) {
+      this.fileName = fileName;
+    }
+    this.updateDocumentTitle();
   }
 
   async exportPdfFromCommand(): Promise<string | null> {
     this.ensureDocumentLoaded();
     const targetPath = await this.selectSavePath(this.suggestedPdfName(), 'PDF 문서', ['pdf']);
     if (!targetPath) return null;
-    const finalPath = this.withExtension(targetPath, 'pdf');
-    const stagedPath = await this.invoke<string>('prepare_staged_hwp_pdf_export', {
-      targetPath: finalPath,
+    return this.invoke<string>('export_pdf_from_hwp_bytes', {
+      bytes: this.currentHwpBytes(),
+      targetPath: this.withExtension(targetPath, 'pdf'),
+      pageRange: null,
+      openAfter: true,
     });
-    try {
-      await this.writeCurrentHwpToPath(stagedPath);
-      return await this.invoke<string>('export_pdf_from_hwp_path', {
-        stagedPath,
-        targetPath: finalPath,
-        pageRange: null,
-        openAfter: true,
-      });
-    } finally {
-      await remove(stagedPath).catch(() => undefined);
-    }
   }
 
   async printCurrentWebview(): Promise<void> {
@@ -200,25 +253,9 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     await this.invoke<void>('destroy_current_window');
   }
 
-  async cancelAppQuit(): Promise<void> {
-    await this.invoke<void>('cancel_app_quit');
-  }
-
   async revealInFolder(): Promise<void> {
     if (!this.sourcePath) return;
     await this.invoke<void>('reveal_in_folder', { path: this.sourcePath });
-  }
-
-  async getUpdateState(): Promise<DesktopUpdateState> {
-    return this.invoke<DesktopUpdateState>('get_update_state');
-  }
-
-  async startUpdateInstall(): Promise<void> {
-    await this.invoke<void>('start_update_install');
-  }
-
-  async restartToApplyUpdate(): Promise<void> {
-    await this.invoke<void>('restart_to_apply_update');
   }
 
   hasUnsavedChanges(): boolean {
@@ -265,6 +302,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     }
     this.docId = null;
     this.sourcePath = null;
+    this.externalSourceUri = null;
     this.dirty = false;
     this.updateDocumentTitle();
   }
@@ -286,41 +324,83 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     });
   }
 
-  private async saveHwpThroughStaging(
-    docId: string,
-    targetPath: string | null,
-  ): Promise<DesktopSaveResult | null> {
-    const finalPath = targetPath ?? this.sourcePath;
-    if (!finalPath) throw new Error('새 문서는 저장 경로가 필요합니다');
-
-    const allowExternalOverwrite = await this.confirmExternalOverwriteIfNeeded(docId, finalPath);
+  private async saveHwpBytes(docId: string, targetPath: string | null): Promise<DesktopSaveResult | null> {
+    const allowExternalOverwrite = await this.confirmExternalOverwriteIfNeeded(docId, targetPath);
     if (allowExternalOverwrite === null) return null;
 
-    const stagedPath = await this.invoke<string>('prepare_staged_hwp_save', { targetPath: finalPath });
+    const result = await this.invoke<DesktopSaveResult>('save_hwp_bytes', {
+      docId,
+      bytes: this.currentHwpBytes(),
+      targetPath,
+      expectedRevision: this.revision,
+      allowExternalOverwrite,
+    });
+    this.applyNativeSaveResult(result);
+    return result;
+  }
+
+  private async saveExternalUriHwpBytes(
+    docId: string,
+    sourceUri: string,
+  ): Promise<DesktopSaveResult | null> {
+    const payload = await this.exportHwpBytesForExternalSave();
+    const bytes = new Uint8Array(payload.bytes);
     try {
-      await this.writeCurrentHwpToPath(stagedPath);
-      const result = await this.invoke<DesktopSaveResult>('commit_staged_hwp_save', {
-        docId,
-        stagedPath,
-        targetPath: finalPath,
-        expectedRevision: this.revision,
-        allowExternalOverwrite,
-      });
-      this.applyNativeSaveResult(result);
-      return result;
-    } finally {
-      await remove(stagedPath).catch(() => undefined);
+      await this.writeExternalUriBytes(sourceUri, bytes);
+      return this.commitExternalHwpSave(bytes, payload.fileName);
+    } catch (error) {
+      if (!isUriWritePermissionError(error)) {
+        throw error;
+      }
+      return this.saveExternalUriWithPickerFallback(bytes, payload.fileName);
     }
+  }
+
+  private async writeExternalUriBytes(sourceUri: string, bytes: Uint8Array): Promise<void> {
+    await writeUriBytes(sourceUri, bytes);
+  }
+
+  private async saveExternalUriWithPickerFallback(
+    bytes: Uint8Array,
+    suggestedFileName: string,
+  ): Promise<DesktopSaveResult | null> {
+    const nextName = this.withExtension(suggestedFileName || this.fileName || 'document', 'hwp');
+    const writableUri = await requestWritableUri(nextName, 'application/x-hwp');
+
+    if (!writableUri) {
+      return this.saveDocumentAsFromCommand();
+    }
+
+    await this.writeExternalUriBytes(writableUri, bytes);
+    const result = await this.commitExternalHwpSave(bytes, nextName);
+    this.externalSourceUri = writableUri;
+    this.fileName = nextName;
+    this.updateDocumentTitle();
+    return result;
+  }
+
+  private async saveExternalUriFromTarget(
+    uri: string,
+    suggestedFileName: string,
+  ): Promise<DesktopSaveResult> {
+    const bytes = Uint8Array.from(this.currentHwpBytes());
+    await this.writeExternalUriBytes(uri, bytes);
+    const fileName = this.fileNameFromTargetUri(uri, suggestedFileName);
+    const result = await this.commitExternalHwpSave(bytes, fileName);
+    this.externalSourceUri = uri;
+    this.sourcePath = null;
+    this.fileName = fileName;
+    this.updateDocumentTitle();
+    return result;
   }
 
   private async confirmExternalOverwriteIfNeeded(
     docId: string,
     targetPath: string | null,
   ): Promise<boolean | null> {
-    const effectivePath = targetPath ?? this.sourcePath;
     const status = await this.invoke<ExternalModificationStatus>('check_external_modification', {
       docId,
-      targetPath: effectivePath,
+      targetPath,
     });
     if (!status.changed) return false;
 
@@ -403,55 +483,31 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     });
   }
 
-  private async writeCurrentHwpToPath(path: string): Promise<void> {
-    await writeFileInChunks(path, super.exportHwp());
-  }
-
   private withExtension(path: string, extension: string): string {
     const escaped = extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\.${escaped}$`, 'i').test(path) ? path : `${path}.${extension}`;
   }
 
-  private async readFileForOpen(path: string): Promise<{
-    bytes: Uint8Array;
-    sourceFingerprint?: SourceFingerprint;
-  }> {
-    const before = await stat(path);
-    const { bytes, contentHash } = await readFileInChunks(path, finiteFileSize(before.size));
-    const after = await stat(path);
-    const beforeFingerprint = this.statFingerprint(before);
-    const afterFingerprint = this.statFingerprint(after);
-    if (
-      beforeFingerprint &&
-      afterFingerprint &&
-      (beforeFingerprint.len !== afterFingerprint.len ||
-        beforeFingerprint.modifiedMillis !== afterFingerprint.modifiedMillis)
-    ) {
-      throw new Error('파일을 읽는 중 변경되었습니다. 다시 시도하세요.');
-    }
-    return {
-      bytes,
-      sourceFingerprint: afterFingerprint
-        ? {
-            ...afterFingerprint,
-            contentHash,
-          }
-        : undefined,
-    };
+  private isContentUri(value: string): boolean {
+    return value.toLowerCase().startsWith('content://');
   }
 
-  private statFingerprint(
-    info: Partial<{
-      size: number;
-      mtime: Date | null;
-    }>,
-  ): Pick<SourceFingerprint, 'len' | 'modifiedMillis'> | undefined {
-    const size = finiteFileSize(info.size);
-    const modifiedMillis = info.mtime instanceof Date ? info.mtime.getTime() : undefined;
-    if (size === undefined || modifiedMillis === undefined || !Number.isFinite(modifiedMillis)) {
-      return undefined;
+  private fileNameFromTargetUri(uri: string, fallback: string): string {
+    const cleanFallback = this.withExtension((fallback || 'document').trim(), 'hwp');
+    const base = uri.split('?')[0].split('#')[0].split('/').pop();
+    if (!base) return cleanFallback;
+    try {
+      const decoded = decodeURIComponent(base).trim();
+      if (/\.hwpx$/i.test(decoded)) return decoded.replace(/\.hwpx$/i, '.hwp');
+      if (/\.hwp$/i.test(decoded)) return decoded;
+    } catch {
+      // ignore decode failure and keep fallback
     }
-    return { len: size, modifiedMillis };
+    return cleanFallback;
+  }
+
+  private currentHwpBytes(): number[] {
+    return Array.from(super.exportHwp());
   }
 
   private applyNativeOpenResult(result: NativeOpenResult): void {
@@ -471,6 +527,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     this.revision = result.revision;
     this.dirty = result.dirty;
     if (this.sourcePath) {
+      this.externalSourceUri = null;
       this.fileName = this.sourcePath.split(/[\\/]/).pop() || this.fileName;
     }
     this.updateDocumentTitle();

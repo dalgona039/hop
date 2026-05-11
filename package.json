@@ -1,6 +1,6 @@
 {
   "name": "hop",
-  "version": "0.1.11",
+  "version": "0.1.4",
   "private": true,
   "description": "HOP is Open HWP",
   "license": "MIT",
@@ -9,9 +9,11 @@
   "scripts": {
     "build:studio": "pnpm --filter @golbin/hop-studio-host build",
     "build:desktop": "pnpm --filter hop-desktop build",
+    "android:bridge:setup": "node scripts/setup-android-bridge.mjs",
+    "android:bridge:check": "node scripts/check-android-bridge.mjs",
     "tauri": "pnpm --filter hop-desktop tauri",
     "test": "pnpm run test:upstream && pnpm run test:studio && pnpm run test:desktop",
-    "test:upstream": "node --test tests/update-upstream.test.mjs tests/rhwp-baseline.test.mjs",
+    "test:upstream": "node --test tests/update-upstream.test.mjs",
     "test:studio": "pnpm --filter @golbin/hop-studio-host test",
     "test:desktop": "cd apps/desktop/src-tauri && cargo test",
     "clippy:desktop": "cd apps/desktop/src-tauri && cargo clippy -- -D warnings"

@@ -22,23 +22,25 @@ export async function openPrintDialog(
   const pageCount = document.pageCount;
   if (pageCount === 0) return;
 
+  const svgPages: string[] = [];
+  for (let i = 0; i < pageCount; i += 1) {
+    const message = `인쇄 준비 중... (${i + 1}/${pageCount})`;
+    options.onStatus?.(message);
+    svgPages.push(document.renderPageSvg(i));
+    if (i % 5 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
   const pageInfo = document.getPageInfo(0);
   const widthMm = Math.round((pageInfo.width * 25.4) / 96);
   const heightMm = Math.round((pageInfo.height * 25.4) / 96);
 
-  const root = renderPrintDocumentShell({
+  renderPrintDocument({
     fileName: document.fileName,
     pageCount,
+    svgPages,
     widthMm,
     heightMm,
   });
-  for (let i = 0; i < pageCount; i += 1) {
-    options.onStatus?.(`인쇄 준비 중... (${i + 1}/${pageCount})`);
-    appendPrintPage(root, document.renderPageSvg(i));
-    if ((i + 1) % 5 === 0 && i + 1 < pageCount) {
-      await nextTask();
-    }
-  }
 
   options.onStatus?.('인쇄 대화상자를 여는 중...');
   await nextFrame();
@@ -63,12 +65,13 @@ export async function openPrintDialog(
   }
 }
 
-function renderPrintDocumentShell(payload: {
+function renderPrintDocument(payload: {
   fileName: string;
   pageCount: number;
+  svgPages: string[];
   widthMm: number;
   heightMm: number;
-}): HTMLElement {
+}): void {
   removePrintDocument();
 
   const style = document.createElement('style');
@@ -124,18 +127,16 @@ function renderPrintDocumentShell(payload: {
   root.setAttribute('aria-hidden', 'true');
   root.dataset.fileName = payload.fileName;
   root.dataset.pageCount = String(payload.pageCount);
+  for (const svg of payload.svgPages) {
+    const page = document.createElement('div');
+    page.className = 'hop-print-page';
+    const svgNode = parsePrintableSvg(svg);
+    if (svgNode) page.appendChild(svgNode);
+    root.appendChild(page);
+  }
 
   document.head.appendChild(style);
   document.body.appendChild(root);
-  return root;
-}
-
-function appendPrintPage(root: HTMLElement, svg: string): void {
-  const page = document.createElement('div');
-  page.className = 'hop-print-page';
-  const svgNode = parsePrintableSvg(svg);
-  if (svgNode) page.appendChild(svgNode);
-  root.appendChild(page);
 }
 
 function parsePrintableSvg(svg: string): SVGSVGElement | null {
@@ -161,24 +162,22 @@ function sanitizeSvg(root: Element): void {
       const value = attribute.value.trim().toLowerCase();
       if (name.startsWith('on') || value.includes('javascript:')) {
         element.removeAttribute(attribute.name);
-      } else if (['href', 'src', 'xlink:href'].includes(name) && !isSafePrintSvgReference(value)) {
+      } else if (['href', 'src', 'xlink:href'].includes(name) && !isSafeSvgReference(value)) {
         element.removeAttribute(attribute.name);
       }
     }
   }
 }
 
-export function isSafePrintSvgReference(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return normalized === ''
-    || normalized.startsWith('#')
-    || normalized.startsWith('data:image/png;')
-    || normalized.startsWith('data:image/jpeg;')
-    || normalized.startsWith('data:image/jpg;')
-    || normalized.startsWith('data:image/gif;')
-    || normalized.startsWith('data:image/webp;')
-    || normalized.startsWith('data:image/bmp;')
-    || normalized.startsWith('data:image/svg+xml;');
+function isSafeSvgReference(value: string): boolean {
+  return value === ''
+    || value.startsWith('#')
+    || value.startsWith('data:image/png;')
+    || value.startsWith('data:image/jpeg;')
+    || value.startsWith('data:image/jpg;')
+    || value.startsWith('data:image/gif;')
+    || value.startsWith('data:image/webp;')
+    || value.startsWith('data:image/bmp;');
 }
 
 function removePrintDocument(): void {
@@ -188,8 +187,4 @@ function removePrintDocument(): void {
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
-}
-
-function nextTask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }

@@ -1,8 +1,7 @@
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { EventBus } from '@/core/event-bus';
-import { isTauriRuntime } from '@/core/bridge-factory';
-import { findLatestSupportedDocumentPath, hasSupportedDocumentPath } from '@/core/document-files';
-import type { DesktopBridgeApi, DesktopLoadPayload, DesktopUpdateState } from './tauri-bridge';
+import { isTauriDesktopRuntime } from '@/core/bridge-factory';
+import type { DesktopBridgeApi, DesktopLoadPayload } from './tauri-bridge';
 
 type DesktopRuntimeBridge = Partial<
   Pick<
@@ -12,9 +11,7 @@ type DesktopRuntimeBridge = Partial<
     | 'createNewDocumentAsync'
     | 'confirmWindowClose'
     | 'destroyCurrentWindow'
-    | 'cancelAppQuit'
     | 'hasUnsavedChanges'
-    | 'getUpdateState'
   >
 >;
 
@@ -23,7 +20,6 @@ interface DesktopEventsOptions {
   dispatcher: CommandDispatcher;
   eventBus: EventBus;
   setMessage(message: string): void;
-  onUpdateState(state: DesktopUpdateState): void;
 }
 
 interface CloseRequestEvent {
@@ -35,9 +31,8 @@ export async function setupDesktopEvents({
   dispatcher,
   eventBus,
   setMessage,
-  onUpdateState,
 }: DesktopEventsOptions): Promise<void> {
-  if (!isTauriRuntime()) return;
+  if (!isTauriDesktopRuntime()) return;
 
   const desktop = bridge as DesktopRuntimeBridge;
   const { listen } = await import('@tauri-apps/api/event');
@@ -49,17 +44,9 @@ export async function setupDesktopEvents({
     if (payload?.message) setMessage(payload.message);
   });
 
-  await listen('hop-update-state', (event) => {
-    onUpdateState(event.payload as DesktopUpdateState);
-  });
-
   await currentWindow.listen('hop-menu-command', (event) => {
     const command = String(event.payload || '');
     if (command) dispatcher.dispatch(command);
-  });
-
-  await currentWindow.listen('hop-app-quit-requested', async () => {
-    await handleDesktopAppQuitRequest(desktop, setMessage);
   });
 
   await currentWindow.listen('hop-open-paths', async (event) => {
@@ -75,7 +62,7 @@ export async function setupDesktopEvents({
 
   await currentWindow.listen('tauri://drag-enter', (event) => {
     const payload = event.payload as { paths?: string[] };
-    if (hasSupportedDocumentPath(payload.paths ?? [])) {
+    if (hasSupportedDocumentTarget(payload.paths ?? [])) {
       setDesktopDragActive(true);
       setMessage('HWP/HWPX 파일을 놓으면 문서를 엽니다');
     }
@@ -100,14 +87,6 @@ export async function setupDesktopEvents({
     paths: pending ?? [],
     setMessage,
   });
-
-  if (desktop.getUpdateState) {
-    try {
-      onUpdateState(await desktop.getUpdateState());
-    } catch (error) {
-      console.warn('[desktop-events] updater state hydrate failed:', error);
-    }
-  }
 }
 
 export async function createDesktopDocument(bridge: unknown): Promise<DesktopLoadPayload | null> {
@@ -123,62 +102,34 @@ async function handleDesktopCloseRequest(
 ): Promise<void> {
   if (!desktop.destroyCurrentWindow) return;
   event.preventDefault();
-  await confirmAndDestroyWindow(desktop, {
-    context: 'close request',
-    errorPrefix: '창 닫기 실패',
-    setMessage,
-  });
+
+  try {
+    const canClose = desktop.confirmWindowClose ? await desktop.confirmWindowClose() : true;
+    if (canClose) await desktop.destroyCurrentWindow();
+  } catch (error) {
+    console.error('[desktop-events] close request failed:', error);
+    if (!desktop.hasUnsavedChanges?.()) {
+      await desktop.destroyCurrentWindow();
+    } else {
+      setMessage(`창 닫기 실패: ${error}`);
+    }
+  }
 }
 
-async function handleDesktopAppQuitRequest(
-  desktop: DesktopRuntimeBridge,
-  setMessage: (message: string) => void,
-): Promise<void> {
-  if (!desktop.destroyCurrentWindow) return;
-  await confirmAndDestroyWindow(desktop, {
-    context: 'app quit request',
-    errorPrefix: '앱 종료 실패',
-    onCancel: () => desktop.cancelAppQuit?.(),
-    setMessage,
-  });
+function hasSupportedDocumentTarget(paths: string[]): boolean {
+  return paths.some(isSupportedDocumentTarget);
+}
+
+function isSupportedDocumentTarget(value: string): boolean {
+  return /\.(hwp|hwpx)(?:$|[?#])/i.test(value);
+}
+
+function isContentUriTarget(value: string): boolean {
+  return value.toLowerCase().startsWith('content://');
 }
 
 function setDesktopDragActive(active: boolean): void {
   document.getElementById('scroll-container')?.classList.toggle('drag-over', active);
-}
-
-async function confirmAndDestroyWindow(
-  desktop: DesktopRuntimeBridge,
-  {
-    context,
-    errorPrefix,
-    onCancel,
-    setMessage,
-  }: {
-    context: string;
-    errorPrefix: string;
-    onCancel?: () => Promise<void> | void;
-    setMessage: (message: string) => void;
-  },
-): Promise<void> {
-  if (!desktop.destroyCurrentWindow) return;
-
-  try {
-    const canClose = desktop.confirmWindowClose ? await desktop.confirmWindowClose() : true;
-    if (canClose) {
-      await desktop.destroyCurrentWindow();
-    } else {
-      await onCancel?.();
-    }
-  } catch (error) {
-    console.error(`[desktop-events] ${context} failed:`, error);
-    if (!desktop.hasUnsavedChanges?.()) {
-      await desktop.destroyCurrentWindow();
-    } else {
-      setMessage(`${errorPrefix}: ${error}`);
-      await onCancel?.();
-    }
-  }
 }
 
 async function openLatestDesktopDocument({
@@ -192,16 +143,22 @@ async function openLatestDesktopDocument({
   paths: string[];
   setMessage(message: string): void;
 }): Promise<void> {
-  const path = findLatestSupportedDocumentPath(paths);
-  if (!path) {
+  const target = [...paths].reverse().find(isSupportedDocumentTarget);
+  if (!target) {
     if (paths.length > 0) setMessage('HWP/HWPX 파일만 열 수 있습니다');
     return;
   }
+
+  if (isContentUriTarget(target)) {
+    setMessage('content URI 파일은 모바일 파일 브리지 구현 후 자동으로 열립니다');
+    return;
+  }
+
   if (!bridge.openDocumentByPath) return;
 
   try {
     setMessage('파일 로딩 중...');
-    const loaded = await bridge.openDocumentByPath(path);
+    const loaded = await bridge.openDocumentByPath(target);
     if (loaded) eventBus.emit('desktop-document-loaded', loaded);
   } catch (error) {
     const errMsg = `파일 로드 실패: ${error}`;
