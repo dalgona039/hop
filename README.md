@@ -1,3 +1,5 @@
+[DeepL Translation of dalgona039/hop]
+
 # HOP
 
 **HOP is Open HWP**
